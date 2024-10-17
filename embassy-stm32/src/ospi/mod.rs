@@ -146,6 +146,17 @@ impl Default for TransferConfig {
     }
 }
 
+/// OSPI configuration for memory mapped mode
+#[derive(Default)]
+pub struct MemoryMappedConfig {
+    /// Transfer configuration for read commands.
+    pub read_config: Option<TransferConfig>,
+    /// Transfer configuration for write commands.
+    pub write_config: Option<TransferConfig>,
+    /// Command timeout
+    pub timeout: Option<u16>
+}
+
 /// Error used for Octospi implementation
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -337,6 +348,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                     }
                 }
             });
+
+            T::OCTOSPIM_REGS.cr().modify(|w| {
+                w.set_req2ack_time(0x1);
+                w.set_muxen(true);
+            });
         }
 
         // System configuration
@@ -436,7 +452,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
 
         T::REGS.cr().modify(|w| {
-            w.set_fmode(0.into());
+            w.set_fmode(vals::FunctionalMode::INDIRECT_WRITE);
         });
 
         // Configure alternate bytes
@@ -677,6 +693,122 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
     /// Get current configuration
     pub fn get_config(&self) -> Config {
         self.config
+    }
+
+    /// Enter memory mapped mode
+    pub fn memory_mapped(&mut self, config: MemoryMappedConfig) -> Result<(), OspiError> {
+        /*
+        // Check that transaction doesn't use more than hardware initialized pins
+        if <enums::OspiWidth as Into<u8>>::into(command.iwidth) > <enums::OspiWidth as Into<u8>>::into(self.width)
+            || <enums::OspiWidth as Into<u8>>::into(command.adwidth) > <enums::OspiWidth as Into<u8>>::into(self.width)
+            || <enums::OspiWidth as Into<u8>>::into(command.abwidth) > <enums::OspiWidth as Into<u8>>::into(self.width)
+            || <enums::OspiWidth as Into<u8>>::into(command.dwidth) > <enums::OspiWidth as Into<u8>>::into(self.width)
+            {
+                return Err(OspiError::InvalidCommand);
+            }
+        */
+
+        // Wait for busy flag to clear
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.cr().modify(|w| {
+           w.set_en(false);
+        });
+
+        if let Some(read_config) = config.read_config {
+            if let Some(ab) = read_config.alternate_bytes {
+                T::REGS.abr().write(|v| v.set_alternate(ab));
+                T::REGS.ccr().modify(|w| {
+                    w.set_abmode(PhaseMode::from_bits(read_config.abwidth.into()));
+                    w.set_abdtr(read_config.abdtr);
+                    w.set_absize(SizeInBits::from_bits(read_config.absize.into()));
+                })
+            }
+
+            // Configure dummy cycles
+            T::REGS.tcr().modify(|w| {
+                w.set_dcyc(read_config.dummy.into());
+            });
+
+            // Configure instruction/address/data modes
+            T::REGS.ccr().modify(|w| {
+                w.set_imode(PhaseMode::from_bits(read_config.iwidth.into()));
+                w.set_idtr(read_config.idtr);
+                w.set_isize(SizeInBits::from_bits(read_config.isize.into()));
+    
+                w.set_admode(PhaseMode::from_bits(read_config.adwidth.into()));
+                w.set_addtr(read_config.addtr);
+                w.set_adsize(SizeInBits::from_bits(read_config.adsize.into()));
+    
+                w.set_dmode(PhaseMode::from_bits(read_config.dwidth.into()));
+                w.set_ddtr(read_config.ddtr);
+            });
+
+            if let Some(instruction) = read_config.instruction {
+                T::REGS.ir().write(|v| {
+                    v.set_instruction(instruction);
+                });
+            }
+        }
+
+        if let Some(write_config) = config.write_config {
+            if let Some(ab) = write_config.alternate_bytes {
+                T::REGS.wabr().write(|v| v.set_alternate(ab));
+                T::REGS.wccr().modify(|w| {
+                    w.set_abmode(PhaseMode::from_bits(write_config.abwidth.into()));
+                    w.set_abdtr(write_config.abdtr);
+                    w.set_absize(SizeInBits::from_bits(write_config.absize.into()));
+                })
+            }
+
+            // Configure dummy cycles
+            T::REGS.wtcr().modify(|w| {
+                w.set_dcyc(write_config.dummy.into());
+            });
+
+            // Configure instruction/address/data modes
+            T::REGS.wccr().modify(|w| {
+                w.set_imode(PhaseMode::from_bits(write_config.iwidth.into()));
+                w.set_idtr(write_config.idtr);
+                w.set_isize(SizeInBits::from_bits(write_config.isize.into()));
+    
+                w.set_admode(PhaseMode::from_bits(write_config.adwidth.into()));
+                w.set_addtr(write_config.addtr);
+                w.set_adsize(SizeInBits::from_bits(write_config.adsize.into()));
+    
+                w.set_dmode(PhaseMode::from_bits(write_config.dwidth.into()));
+                w.set_ddtr(write_config.ddtr);
+                w.set_dqse(true);
+            });
+
+            if let Some(instruction) = write_config.instruction {
+                T::REGS.wir().write(|v| {
+                    v.set_instruction(instruction);
+                });
+            }
+        }
+
+        if let Some(timeout) = config.timeout {
+            T::REGS.lptr().modify(|w| {
+                w.set_timeout(timeout);
+            });
+
+            T::REGS.cr().modify(|w| {
+                w.set_tcen(true);
+            });
+        }
+        else {
+            T::REGS.cr().modify(|w| {
+                w.set_tcen(false);
+            });
+        }
+    
+        T::REGS.cr().modify(|w| {
+            w.set_fmode(vals::FunctionalMode::MEMORY_MAPPED);
+            w.set_en(true);
+        });
+
+        Ok(())
     }
 }
 
@@ -1174,6 +1306,75 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         finish_dma(T::REGS);
 
         Ok(())
+    }
+
+    pub async fn autopoll(&mut self, transaction: TransferConfig, config: AutopollConfig) -> Result<(), OspiError> {
+        // Wait for peripheral to be free
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.psmar().write(|w| w.set_match_(config.match_value));
+        T::REGS.psmkr().write(|w| w.set_mask(config.match_mask));
+        T::REGS.pir().write(|w| w.set_interval(config.interval));
+
+        self.configure_command(&transaction, Some(1))?;
+
+        // Clear status flags
+        T::REGS.fcr().write(|w| {
+            w.set_csmf(true);
+            w.set_ctef(true);
+        });
+
+        // Enable interrupts and configure auto polling mode
+        T::REGS.cr().modify(|w| {
+            w.set_smie(true);
+            w.set_teie(true);
+
+            w.set_pmm(config.match_mode.into());
+            w.set_apms(config.auto_stop);
+        });
+
+        let current_address = T::REGS.ar().read().address();
+        let current_instruction = T::REGS.ir().read().instruction();
+
+        T::REGS
+            .cr()
+            .modify(|v| v.set_fmode(vals::FunctionalMode::AUTO_STATUS_POLLING));
+
+        compiler_fence(Ordering::SeqCst);
+
+        // Auto polling begins when the instruction/address is set
+        if T::REGS.ccr().read().admode() == vals::PhaseMode::NONE {
+            T::REGS.ir().write(|v| v.set_instruction(current_instruction));
+        } else {
+            T::REGS.ar().write(|v| v.set_address(current_address));
+        }
+
+        poll_fn(|cx| {
+            T::state().waker.register(cx.waker());
+
+            let bits = T::REGS.sr().read();
+
+            if bits.tef() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Err(OspiError::TransferError))
+            } else if bits.smf() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 

@@ -2,7 +2,7 @@
 
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
-pub(crate) enum OspiMode {
+pub enum OspiMode {
     IndirectWrite,
     IndirectRead,
     AutoPolling,

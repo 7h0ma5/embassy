@@ -199,12 +199,17 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         &mut self,
         read_config: TransferConfig,
         write_config: TransferConfig,
+        timeout: Option<u16>,
     ) -> Result<(), OspiError> {
-        // Use configure command to set read config
-        self.configure_command(&read_config, None)?;
-
         let reg = T::REGS;
         while reg.sr().read().busy() {}
+
+        reg.cr().modify(|w| {
+            w.set_en(false);
+        });
+
+        // Use configure command to set read config
+        self.configure_command(&read_config, None)?;
 
         if let Some(instruction) = write_config.instruction {
             reg.wir().write(|r| {
@@ -231,11 +236,17 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
 
         reg.wtcr().modify(|w| w.set_dcyc(write_config.dummy.into()));
 
+        reg.lptr().modify(|w| {
+            w.set_timeout(timeout.unwrap_or(0));
+        });
+
         // Enable memory mapped mode
         reg.cr().modify(|r| {
             r.set_fmode(crate::ospi::vals::FunctionalMode::MEMORY_MAPPED);
-            r.set_tcen(false);
+            r.set_tcen(timeout.is_some());
+            r.set_en(true);
         });
+
         Ok(())
     }
 
@@ -277,6 +288,9 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         width: OspiWidth,
         dual_quad: bool,
     ) -> Self {
+        rcc::enable_and_reset::<T>();
+        while T::REGS.sr().read().busy() {}
+
         #[cfg(octospim_v1)]
         {
             // RCC for octospim should be enabled before writing register
@@ -352,11 +366,12 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                     }
                 }
             });
-        }
 
-        // System configuration
-        rcc::enable_and_reset::<T>();
-        while T::REGS.sr().read().busy() {}
+            T::OCTOSPIM_REGS.cr().modify(|w| {
+                w.set_req2ack_time(0x1);
+                w.set_muxen(true);
+            });
+        }
 
         // Device configuration
         T::REGS.dcr1().modify(|w| {
@@ -451,7 +466,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
 
         T::REGS.cr().modify(|w| {
-            w.set_fmode(0.into());
+            w.set_fmode(vals::FunctionalMode::INDIRECT_WRITE);
         });
 
         // Configure alternate bytes

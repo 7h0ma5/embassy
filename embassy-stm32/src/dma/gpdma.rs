@@ -27,17 +27,44 @@ pub(crate) struct ChannelInfo {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub struct TransferOptions {
+    pub priority: TransferPriority,
     pub trigger_source: Option<TriggerSource>,
     pub trigger_mode: TriggerMode,
     pub trigger_polarity: TriggerPolarity,
+    pub src_burst_len: u8,
+    pub dst_burst_len: u8,
 }
 
 impl Default for TransferOptions {
     fn default() -> Self {
         Self {
+            priority: TransferPriority::LowWithLowWeight,
             trigger_source: None,
             trigger_mode: TriggerMode::Block,
             trigger_polarity: TriggerPolarity::None,
+            src_burst_len: 1,
+            dst_burst_len: 1,
+        }
+    }
+}
+
+/// Defines the priority of a DMA transfer.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TransferPriority {
+    LowWithLowWeight,
+    LowWithMidWeight,
+    LowWithHighWeigt,
+    High,
+}
+
+impl From<TransferPriority> for vals::Prio {
+    fn from(value: TransferPriority) -> Self {
+        match value {
+            TransferPriority::LowWithLowWeight => Self::LOWWITHMIDWEIGHT,
+            TransferPriority::LowWithMidWeight => Self::LOWWITHMIDWEIGHT,
+            TransferPriority::LowWithHighWeigt => Self::LOWWITHHIGHWEIGHT,
+            TransferPriority::High => Self::HIGH,
         }
     }
 }
@@ -136,9 +163,9 @@ pub enum TriggerPolarity {
 impl From<TriggerPolarity> for vals::Trigpol {
     fn from(value: TriggerPolarity) -> Self {
         match value {
-            TriggerPolarity::None => vals::Trigpol::NONE,
-            TriggerPolarity::RisingEdge => vals::Trigpol::RISINGEDGE,
-            TriggerPolarity::FallingEdge => vals::Trigpol::FALLINGEDGE,
+            TriggerPolarity::None => Self::NONE,
+            TriggerPolarity::RisingEdge => Self::RISINGEDGE,
+            TriggerPolarity::FallingEdge => Self::FALLINGEDGE,
         }
     }
 }
@@ -360,6 +387,10 @@ impl<'a> Transfer<'a> {
             panic!("DMA transfers may not be larger than 65535 bytes.");
         };
 
+        if !(1..=63).contains(&options.src_burst_len) || !(1..=63).contains(&options.dst_burst_len) {
+            panic!("DMA transfer burst length must lie between 1 and 63.");
+        };
+
         let info = channel.info();
         let ch = info.dma.ch(info.num);
 
@@ -376,6 +407,8 @@ impl<'a> Transfer<'a> {
             w.set_ddw(data_size.into());
             w.set_sinc(dir == Dir::MemoryToPeripheral && incr_mem);
             w.set_dinc(dir == Dir::PeripheralToMemory && incr_mem);
+            w.set_sbl_1(options.src_burst_len - 1);
+            w.set_dbl_1(options.dst_burst_len - 1);
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {
@@ -383,9 +416,9 @@ impl<'a> Transfer<'a> {
                 Dir::PeripheralToMemory => vals::Dreq::SOURCEPERIPHERAL,
             });
             w.set_reqsel(request);
+            w.set_trigm(options.trigger_mode.into());
             w.set_trigsel(options.trigger_source.map(u8::from).unwrap_or(0));
             w.set_trigpol(options.trigger_polarity.into());
-            w.set_trigm(options.trigger_mode.into());
         });
         ch.tr3().write(|_| {}); // no address offsets.
         ch.br1().write(|w| w.set_bndt(bndt));
@@ -402,6 +435,9 @@ impl<'a> Transfer<'a> {
         }
 
         ch.cr().write(|w| {
+            // Set the priority
+            w.set_prio(options.priority.into());
+
             // Enable interrupts
             w.set_tcie(true);
             w.set_useie(true);

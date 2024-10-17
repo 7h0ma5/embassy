@@ -242,6 +242,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         &mut self,
         read_config: TransferConfig,
         write_config: TransferConfig,
+        timeout: Option<u16>,
     ) -> Result<(), OspiError> {
         // Use configure command to set read config
         self.configure_command(&read_config, None)?;
@@ -274,10 +275,14 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
 
         reg.wtcr().modify(|w| w.set_dcyc(write_config.dummy.into()));
 
+        reg.lptr().modify(|w| {
+            w.set_timeout(timeout.unwrap_or(0));
+        });
+
         // Enable memory mapped mode
         reg.cr().modify(|r| {
             r.set_fmode(crate::ospi::vals::FunctionalMode::MemoryMapped);
-            r.set_tcen(false);
+            r.set_tcen(timeout.is_some());
         });
         Ok(())
     }
@@ -569,6 +574,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         #[cfg(octospim_v1)]
         {
             Self::restore_octospis_after_config(octospi1_was_enabled, octospi2_was_enabled);
+
+            T::OCTOSPIM_REGS.cr().modify(|w| {
+                w.set_req2ack_time(0x1);
+                w.set_muxen(true);
+            });
         }
 
         // Free running clock needs to be set after peripheral enable

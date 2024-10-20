@@ -322,6 +322,18 @@ impl AnyChannel {
             w.set_ddw(dst_size.into());
             w.set_sinc(dir == Dir::MemoryToPeripheral && incr_mem);
             w.set_dinc(dir == Dir::PeripheralToMemory && incr_mem);
+            w.set_sbl_1(options.src_burst_len - 1);
+            w.set_dbl_1(options.dst_burst_len - 1);
+            match dir {
+                Dir::MemoryToPeripheral => {
+                    w.set_sap(vals::Ap::PORT1);
+                    w.set_dap(vals::Ap::PORT0);
+                }
+                Dir::PeripheralToMemory => {
+                    w.set_sap(vals::Ap::PORT0);
+                    w.set_dap(vals::Ap::PORT1);
+                }
+            }
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {

@@ -12,7 +12,7 @@ use embassy_hal_internal::Peri;
 #[cfg(not(stm32l0))]
 pub use stm32_metapac::timer::vals::{Bkinp as BreakComparatorPolarity, Bkp as BreakInputPolarity};
 // Re-export useful enums
-pub use stm32_metapac::timer::vals::{FilterValue, Mms as MasterMode, Sms as SlaveMode, Ts as TriggerSource};
+pub use stm32_metapac::timer::vals::{FilterValue, Sms as SlaveMode, Mms as MasterMode, Ts as TriggerSource};
 
 use super::*;
 #[cfg(not(stm32c5))]
@@ -1184,7 +1184,7 @@ impl<'d, T: GeneralInstance4Channel> Timer<'d, T> {
 
     /// Set Timer Master Mode
     pub fn set_master_mode(&self, mms: MasterMode) {
-        self.regs_gp16().cr2().modify(|w| w.set_mms(mms));
+        self.regs_gp16().cr2().modify(|r| r.set_mms(mms));
     }
 
     /// Set Timer Slave Mode

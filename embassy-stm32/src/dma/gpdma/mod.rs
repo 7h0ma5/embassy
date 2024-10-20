@@ -342,6 +342,8 @@ impl<'d> Channel<'d> {
             w.set_ddw(dst_size.into());
             w.set_sinc(dir == Dir::MemoryToPeripheral && incr_mem);
             w.set_dinc(dir == Dir::PeripheralToMemory && incr_mem);
+            w.set_sbl_1(options.src_burst_len - 1);
+            w.set_dbl_1(options.dst_burst_len - 1);
             w.set_dap(match dir {
                 Dir::MemoryToPeripheral => vals::Ap::PORT1, // Destination is peripheral on AHB for HPDMA
                 Dir::PeripheralToMemory => vals::Ap::PORT0, // Destination is memory on AXI for HPDMA

@@ -8,7 +8,7 @@ use core::task::{Context, Poll, Waker};
 use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 
-use super::ringbuffer::{DmaCtrl, OverrunError, ReadableDmaRingBuffer, WritableDmaRingBuffer};
+use super::ringbuffer::{DmaCtrl, Error, ReadableDmaRingBuffer, WritableDmaRingBuffer};
 use super::word::{Word, WordSize};
 use super::{AnyChannel, Channel, Dir, Request, STATE};
 use crate::interrupt::typelevel::Interrupt;
@@ -440,8 +440,9 @@ impl<'a> Transfer<'a> {
         let info = self.channel.info();
         let ch = info.dma.ch(info.num);
 
+        let en = ch.cr().read().en();
         let sr = ch.sr().read();
-        !sr.tcf() && !sr.suspf()
+        en && !sr.tcf() && !sr.suspf()
     }
 
     /// Gets the total remaining transfers for the channel
@@ -499,10 +500,6 @@ impl<'a> DmaCtrl for DmaCtrlImpl<'a> {
         let info = self.channel.info();
         let ch = info.dma.ch(info.num);
         (ch.br1().read().bndt() / self.word_size.bytes() as u16) as usize
-    }
-
-    fn get_complete_count(&self) -> usize {
-        STATE[self.channel.id as usize].complete_count.load(Ordering::Acquire)
     }
 
     fn reset_complete_count(&mut self) -> usize {
@@ -692,7 +689,6 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
         let info = self.channel.info();
         RingBuffer::request_suspend(&info.dma.ch(info.num));
     }
-
     /// Await until the stop completes. This is not used with request_stop(). Just call and await.
     /// It will stop when the current transfer is complete.
     pub async fn stop(&mut self) {
@@ -702,7 +698,7 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
 
     /// Clear the buffers internal pointers.
     pub fn clear(&mut self) {
-        self.ringbuf.clear(&mut DmaCtrlImpl {
+        self.ringbuf.reset(&mut DmaCtrlImpl {
             channel: self.channel.reborrow(),
             word_size: W::size(),
         });
@@ -713,7 +709,7 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
     /// If not all of the elements were read, then there will be some elements in the buffer remaining
     /// The length remaining is the capacity, ring_buf.len(), less the elements remaining after the read
     /// OverrunError is returned if the portion to be read was overwritten by the DMA controller.
-    pub fn read(&mut self, buf: &mut [W]) -> Result<(usize, usize), OverrunError> {
+    pub fn read(&mut self, buf: &mut [W]) -> Result<(usize, usize), Error> {
         self.ringbuf.read(
             &mut DmaCtrlImpl {
                 channel: self.channel.reborrow(),
@@ -734,7 +730,7 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
     /// ring buffer was created with a buffer of size 'N':
     /// - If M equals N/2 or N/2 divides evenly into M, this function will return every N/2 elements read on the DMA source.
     /// - Otherwise, this function may need up to N/2 extra elements to arrive before returning.
-    pub async fn read_exact(&mut self, buffer: &mut [W]) -> Result<usize, OverrunError> {
+    pub async fn read_exact(&mut self, buffer: &mut [W]) -> Result<usize, Error> {
         self.ringbuf
             .read_exact(
                 &mut DmaCtrlImpl {
@@ -839,13 +835,13 @@ impl<'a, W: Word> WritableRingBuffer<'a, W> {
 
     /// Write elements directly to the raw buffer.
     /// This can be used to fill the buffer before starting the DMA transfer.
-    pub fn write_immediate(&mut self, buf: &[W]) -> Result<(usize, usize), OverrunError> {
+    pub fn write_immediate(&mut self, buf: &[W]) -> Result<(usize, usize), Error> {
         self.ringbuf.write_immediate(buf)
     }
 
     /// Clear the buffers internal pointers.
     pub fn clear(&mut self) {
-        self.ringbuf.clear(&mut DmaCtrlImpl {
+        self.ringbuf.reset(&mut DmaCtrlImpl {
             channel: self.channel.reborrow(),
             word_size: W::size(),
         });
@@ -853,7 +849,7 @@ impl<'a, W: Word> WritableRingBuffer<'a, W> {
 
     /// Write elements from the ring buffer
     /// Return a tuple of the length written and the length remaining in the buffer
-    pub fn write(&mut self, buf: &[W]) -> Result<(usize, usize), OverrunError> {
+    pub fn write(&mut self, buf: &[W]) -> Result<(usize, usize), Error> {
         self.ringbuf.write(
             &mut DmaCtrlImpl {
                 channel: self.channel.reborrow(),
@@ -864,7 +860,7 @@ impl<'a, W: Word> WritableRingBuffer<'a, W> {
     }
 
     /// Write an exact number of elements to the ringbuffer.
-    pub async fn write_exact(&mut self, buffer: &[W]) -> Result<usize, OverrunError> {
+    pub async fn write_exact(&mut self, buffer: &[W]) -> Result<usize, Error> {
         self.ringbuf
             .write_exact(
                 &mut DmaCtrlImpl {

@@ -626,6 +626,11 @@ impl<'d, T: GeneralInstance4Channel> Timer<'d, T> {
         self.regs_gp16().ccer().read().cce(channel.index())
     }
 
+    /// Enable/disable update event
+    pub fn enable_update_event(&self, enable: bool) {
+        self.regs_gp16().cr1().modify(|w| w.set_udis(!enable));
+    }
+
     /// Set compare value for a channel.
     pub fn set_compare_value(&self, channel: Channel, value: u32) {
         match T::BITS {

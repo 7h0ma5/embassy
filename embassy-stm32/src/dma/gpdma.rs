@@ -31,7 +31,7 @@ pub struct TransferOptions {
     pub priority: TransferPriority,
     /// Trigger source for the transfer. The number of the source is dependent
     /// on the selected microcontroller and is listed its the reference manual.
-    pub trigger_source: Option<u8>,
+    pub trigger_source: u8,
     /// The trigger mode for the transfer.
     pub trigger_mode: TriggerMode,
     /// The transfer is triggered on the selected edge polarity.
@@ -47,7 +47,7 @@ impl Default for TransferOptions {
     fn default() -> Self {
         Self {
             priority: TransferPriority::LowWithLowWeight,
-            trigger_source: None,
+            trigger_source: 0,
             trigger_mode: TriggerMode::Block,
             trigger_polarity: TriggerPolarity::None,
             src_burst_len: 1,
@@ -66,7 +66,7 @@ pub enum TransferPriority {
     LowWithMidWeight,
     /// Low priority with high weight.
     LowWithHighWeigt,
-    /// High priority. 
+    /// High priority.
     High,
 }
 
@@ -340,6 +340,17 @@ impl<'a> Transfer<'a> {
             w.set_dinc(dir == Dir::PeripheralToMemory && incr_mem);
             w.set_sbl_1(options.src_burst_len - 1);
             w.set_dbl_1(options.dst_burst_len - 1);
+
+            match dir {
+                Dir::MemoryToPeripheral => {
+                    w.set_sap(vals::Ap::PORT1);
+                    w.set_dap(vals::Ap::PORT0);
+                }
+                Dir::PeripheralToMemory => {
+                    w.set_sap(vals::Ap::PORT0);
+                    w.set_dap(vals::Ap::PORT1);
+                }
+            }
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {
@@ -348,7 +359,7 @@ impl<'a> Transfer<'a> {
             });
             w.set_reqsel(request);
             w.set_trigm(options.trigger_mode.into());
-            w.set_trigsel(options.trigger_source.unwrap_or(0));
+            w.set_trigsel(options.trigger_source);
             w.set_trigpol(options.trigger_polarity.into());
         });
         ch.tr3().write(|_| {}); // no address offsets.

@@ -209,11 +209,10 @@ impl AnyChannel {
         if sr.tcf() {
             //clear the flag for the transfer complete
             ch.fcr().modify(|w| w.set_tcf(true));
-            state.complete_count.fetch_add(1, Ordering::Relaxed);
+            state.complete_count.fetch_add(1, Ordering::Release);
             state.waker.wake();
-            return;
         }
-
+        
         if sr.suspf() {
             ch.fcr().modify(|w| w.set_suspf(true));
 
@@ -226,7 +225,6 @@ impl AnyChannel {
                 w.set_htie(false);
             });
 
-            // Wake the future. It'll look at tcf and see it's set.
             state.waker.wake();
         }
     }
@@ -349,6 +347,8 @@ impl<'a> Transfer<'a> {
             panic!("DMA transfer burst length must lie between 1 and 63.");
         };
 
+        let state: &ChannelState = &STATE[channel.id as usize];
+
         let info = channel.info();
         let ch = info.dma.ch(info.num);
 
@@ -356,6 +356,8 @@ impl<'a> Transfer<'a> {
         fence(Ordering::SeqCst);
 
         let this = Self { channel };
+
+        state.complete_count.swap(0, Ordering::Release);
 
         ch.cr().write(|w| w.set_reset(true));
         ch.fcr().write(|w| w.0 = 0xFFFF_FFFF); // clear all irqs
@@ -437,10 +439,12 @@ impl<'a> Transfer<'a> {
     pub fn is_running(&mut self) -> bool {
         let info = self.channel.info();
         let ch = info.dma.ch(info.num);
+        let state = &STATE[self.channel.id as usize];
 
-        let en = ch.cr().read().en();
         let sr = ch.sr().read();
-        en && !sr.tcf() && !sr.suspf()
+        let tcf = state.complete_count.load(Ordering::Acquire) != 0;
+
+        !sr.idlef() && !tcf && !sr.suspf()
     }
 
     /// Gets the total remaining transfers for the channel
@@ -653,9 +657,6 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
     ) -> Self {
         let channel: Peri<'a, AnyChannel> = channel.into();
 
-        #[cfg(dmamux)]
-        super::dmamux::configure_dmamux(&mut channel, request);
-
         let info = channel.info();
 
         RingBuffer::configure(
@@ -787,9 +788,6 @@ impl<'a, W: Word> WritableRingBuffer<'a, W> {
         options: TransferOptions,
     ) -> Self {
         let channel: Peri<'a, AnyChannel> = channel.into();
-
-        #[cfg(dmamux)]
-        super::dmamux::configure_dmamux(&mut channel, request);
 
         let info = channel.info();
 

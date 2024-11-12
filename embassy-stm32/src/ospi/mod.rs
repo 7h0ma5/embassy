@@ -5,15 +5,20 @@
 
 pub mod enums;
 
+use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::sync::atomic::{compiler_fence, Ordering};
+use core::task::Poll;
 
 use embassy_embedded_hal::{GetConfig, SetConfig};
 use embassy_hal_internal::PeripheralType;
+use embassy_sync::waitqueue::AtomicWaker;
 pub use enums::*;
 use stm32_metapac::octospi::vals::{PhaseMode, SizeInBits};
 
 use crate::dma::{word, ChannelAndRequest};
 use crate::gpio::{AfType, AnyPin, OutputType, Pull, SealedPin as _, Speed};
+use crate::interrupt::{self, typelevel::Interrupt};
 use crate::mode::{Async, Blocking, Mode as PeriMode};
 use crate::pac::octospi::{vals, Octospi as Regs};
 #[cfg(octospim_v1)]
@@ -154,12 +159,28 @@ pub struct MemoryMappedConfig {
     /// Transfer configuration for write commands.
     pub write_config: Option<TransferConfig>,
     /// Command timeout
-    pub timeout: Option<u16>
+    pub timeout: Option<u16>,
 }
 
 /// OSPI multiplex configuration
 pub struct MultiplexConfig {
-    pub req2ack_time: u8
+    pub req2ack_time: u8,
+}
+
+/// OSPI autopoll configuration
+pub struct AutopollConfig {
+    /// Specifies the value to be compared with the masked status register to get a match.
+    /// This parameter can be any value between 0 and 0xFFFFFFFF.
+    pub match_value: u32,
+    /// Specifies the mask to be applied to the status bytes received.
+    /// This parameter can be any value between 0 and 0xFFFFFFFF,
+    pub match_mask: u32,
+    /// Specifies the method used for determining a match.
+    pub match_mode: AutopollMatchMode,
+    /// Specifies if automatic polling is stopped after a match.
+    pub auto_stop: bool,
+    /// Specifies the number of clock cycles between two read during automatic polling phases.
+    pub interval: u16,
 }
 
 /// Error used for Octospi implementation
@@ -172,6 +193,8 @@ pub enum OspiError {
     InvalidCommand,
     /// Size zero buffer passed to instruction
     EmptyBuffer,
+    /// The transfer failed
+    TransferError,
 }
 
 /// OSPI driver.
@@ -277,13 +300,16 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         config: Config,
         width: OspiWidth,
         dual_quad: bool,
-        mux_config: Option<MultiplexConfig>
+        mux_config: Option<MultiplexConfig>,
     ) -> Self {
         // System configuration
         rcc::enable_and_reset::<T>();
         while T::REGS.sr().read().busy() {}
 
         T::REGS.cr().modify(|w| w.set_en(false));
+
+        T::Interrupt::unpend();
+        unsafe { T::Interrupt::enable() };
 
         #[cfg(octospim_v1)]
         {
@@ -310,7 +336,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             if let Some(mux_config) = mux_config {
                 info!("Setup multiplexed OSPI {} channel", T::OCTOSPI_IDX);
                 // Clear config
-                T::OCTOSPIM_REGS.p2cr().write(|_| { });
+                T::OCTOSPIM_REGS.p2cr().write(|_| {});
 
                 T::OCTOSPIM_REGS.p2cr().modify(|w| {
                     let octospi_src = if T::OCTOSPI_IDX == 1 { false } else { true };
@@ -350,12 +376,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                     w.set_muxen(true);
                 });
                 info!("Multiplexing enabled.");
-            }
-            else {
+            } else {
                 info!("Setup OSPI {} channel", T::OCTOSPI_IDX);
 
                 // Clear config
-                T::OCTOSPIM_REGS.p1cr().write(|_| { });
+                T::OCTOSPIM_REGS.p1cr().write(|_| {});
 
                 T::OCTOSPIM_REGS.p1cr().modify(|w| {
                     let octospi_src = if T::OCTOSPI_IDX == 1 { false } else { true };
@@ -401,7 +426,6 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 });
             }
         }
-
 
         // Device configuration
         T::REGS.dcr1().modify(|w| {
@@ -496,7 +520,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
 
         T::REGS.cr().modify(|w| {
-            w.set_fmode(vals::FunctionalMode::INDIRECTWRITE);
+            w.set_fmode(vals::FunctionalMode::INDIRECT_WRITE);
         });
 
         // Configure alternate bytes
@@ -505,7 +529,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             T::REGS.ccr().modify(|w| {
                 w.set_abmode(PhaseMode::from_bits(command.abwidth.into()));
                 w.set_abdtr(command.abdtr);
-            w.set_absize(SizeInBits::from_bits(command.absize.into()));
+                w.set_absize(SizeInBits::from_bits(command.absize.into()));
             })
         }
 
@@ -756,7 +780,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         while T::REGS.sr().read().busy() {}
 
         T::REGS.cr().modify(|w| {
-           w.set_en(false);
+            w.set_en(false);
         });
 
         if let Some(read_config) = config.read_config {
@@ -779,11 +803,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 w.set_imode(PhaseMode::from_bits(read_config.iwidth.into()));
                 w.set_idtr(read_config.idtr);
                 w.set_isize(SizeInBits::from_bits(read_config.isize.into()));
-    
+
                 w.set_admode(PhaseMode::from_bits(read_config.adwidth.into()));
                 w.set_addtr(read_config.addtr);
                 w.set_adsize(SizeInBits::from_bits(read_config.adsize.into()));
-    
+
                 w.set_dmode(PhaseMode::from_bits(read_config.dwidth.into()));
                 w.set_ddtr(read_config.ddtr);
             });
@@ -815,11 +839,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 w.set_imode(PhaseMode::from_bits(write_config.iwidth.into()));
                 w.set_idtr(write_config.idtr);
                 w.set_isize(SizeInBits::from_bits(write_config.isize.into()));
-    
+
                 w.set_admode(PhaseMode::from_bits(write_config.adwidth.into()));
                 w.set_addtr(write_config.addtr);
                 w.set_adsize(SizeInBits::from_bits(write_config.adsize.into()));
-    
+
                 w.set_dmode(PhaseMode::from_bits(write_config.dwidth.into()));
                 w.set_ddtr(write_config.ddtr);
                 w.set_dqse(true);
@@ -840,23 +864,22 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             T::REGS.cr().modify(|w| {
                 w.set_tcen(true);
             });
-        }
-        else {
+        } else {
             T::REGS.cr().modify(|w| {
                 w.set_tcen(false);
             });
         }
-    
+
         T::REGS.cr().modify(|w| {
-           w.set_fmode(vals::FunctionalMode::MEMORYMAPPED);
-           w.set_en(true);
+            w.set_fmode(vals::FunctionalMode::MEMORY_MAPPED);
+            w.set_en(true);
         });
 
         Ok(())
     }
 
     /// Create a new multiplexed instance.
-    pub fn multiplex<T2: Instance>(
+    pub fn multiplex<'d2, T2: Instance>(
         &self,
         peri: Peri<'d2, T2>,
         nss: Peri<'d2, impl NSSPin<T2>>,
@@ -887,7 +910,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             config,
             self.width,
             false,
-            Some(mux_config)
+            Some(mux_config),
         );
 
         // Reenable this instance.
@@ -1402,6 +1425,73 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
 
         Ok(())
     }
+
+    pub async fn autopoll(&mut self, transaction: TransferConfig, config: AutopollConfig) -> Result<(), OspiError> {
+        // Wait for peripheral to be free
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.psmar().write(|w| w.set_match_(config.match_value));
+        T::REGS.psmkr().write(|w| w.set_mask(config.match_mask));
+        T::REGS.pir().write(|w| w.set_interval(config.interval));
+
+        self.configure_command(&transaction, Some(1))?;
+
+        // Clear status flags
+        T::REGS.fcr().write(|w| {
+            w.set_csmf(true);
+            w.set_ctef(true);
+        });
+
+        // Enable interrupts and configure auto polling mode
+        T::REGS.cr().modify(|w| {
+            w.set_smie(true);
+            w.set_teie(true);
+
+            w.set_pmm(config.match_mode.into());
+            w.set_apms(config.auto_stop);
+        });
+
+        let current_address = T::REGS.ar().read().address();
+        let current_instruction = T::REGS.ir().read().instruction();
+
+        T::REGS.cr().modify(|v| v.set_fmode(vals::FunctionalMode::AUTO_STATUS_POLLING));
+
+        compiler_fence(Ordering::SeqCst);
+
+        // Auto polling begins when the instruction/address is set
+        if T::REGS.ccr().read().admode() == vals::PhaseMode::NONE {
+            T::REGS.ir().write(|v| v.set_instruction(current_instruction));
+        } else {
+            T::REGS.ar().write(|v| v.set_address(current_address));
+        }
+
+        poll_fn(|cx| {
+            T::state().waker.register(cx.waker());
+
+            let bits = T::REGS.sr().read();
+
+            if bits.tef() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Err(OspiError::TransferError))
+            } else if bits.smf() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
 }
 
 impl<'d, T: Instance, M: PeriMode> Drop for Ospi<'d, T, M> {
@@ -1439,19 +1529,26 @@ pub(crate) trait SealedOctospimInstance {
 }
 
 /// OctoSPI instance trait.
-pub(crate) trait SealedInstance {
+trait SealedInstance {
     const REGS: Regs;
+    fn state() -> &'static State;
 }
 
 /// OSPI instance trait.
 #[cfg(octospim_v1)]
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + SealedOctospimInstance {}
+pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + SealedOctospimInstance {
+    /// Interrupt for OSPI instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
 
 /// OSPI instance trait.
 #[cfg(not(octospim_v1))]
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + RccPeripheral {}
+pub trait Instance: SealedInstance + PeripheralType + RccPeripheral {
+    /// Interrupt for OSPI instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
 
 pin_trait!(SckPin, Instance);
 pin_trait!(NckPin, Instance);
@@ -1484,9 +1581,16 @@ foreach_peripheral!(
     (octospi, $inst:ident) => {
         impl SealedInstance for peripherals::$inst {
             const REGS: Regs = crate::pac::$inst;
+
+            fn state() -> &'static State {
+                static STATE: State = State::new();
+                &STATE
+            }
         }
 
-        impl Instance for peripherals::$inst {}
+        impl Instance for peripherals::$inst {
+            type Interrupt = interrupt::typelevel::$inst;
+        }
     };
 );
 
@@ -1519,3 +1623,40 @@ macro_rules! impl_word {
 impl_word!(u8);
 impl_word!(u16);
 impl_word!(u32);
+
+/// OSPI Interrupt handler
+pub struct InterruptHandler<T: Instance> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        let sr = T::REGS.sr().read();
+        let cr = T::REGS.cr().read();
+
+        if sr.tef() && cr.teie() {
+            T::REGS.cr().modify(|w| w.set_teie(false));
+        } else if sr.smf() && cr.smie() {
+            T::REGS.cr().modify(|w| w.set_smie(false));
+        }
+        else {
+            return;
+        }
+
+        compiler_fence(Ordering::SeqCst);
+        T::state().waker.wake();
+    }
+}
+
+struct State {
+    #[allow(unused)]
+    waker: AtomicWaker,
+}
+
+impl State {
+    const fn new() -> Self {
+        Self {
+            waker: AtomicWaker::new(),
+        }
+    }
+}

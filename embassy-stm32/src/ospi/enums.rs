@@ -384,3 +384,21 @@ impl Into<u8> for DummyCycles {
         }
     }
 }
+
+/// Autopoll match mode
+#[derive(Copy, Clone)]
+pub enum AutopollMatchMode {
+    /// AND match mode between unmasked bits.
+    And,
+    /// OR match mode between unmasked bits.
+    Or
+}
+
+impl From<AutopollMatchMode> for crate::pac::octospi::vals::MatchMode {
+    fn from(value: AutopollMatchMode) -> Self {
+        match value {
+            AutopollMatchMode::And => Self::MATCH_AND,
+            AutopollMatchMode::Or => Self::MATCH_OR
+        }
+    }
+}

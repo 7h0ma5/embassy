@@ -5,15 +5,20 @@
 
 pub mod enums;
 
+use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::sync::atomic::{Ordering, compiler_fence};
+use core::task::Poll;
 
 use embassy_embedded_hal::{GetConfig, SetConfig};
 use embassy_hal_internal::PeripheralType;
+use embassy_sync::waitqueue::AtomicWaker;
 pub use enums::*;
 use stm32_metapac::octospi::vals::{PhaseMode, SizeInBits};
 
 use crate::dma::{ChannelAndRequest, word};
 use crate::gpio::{AfType, Flex, OutputType, Pull, Speed};
+use crate::interrupt;
 use crate::mode::{Async, Blocking, Mode as PeriMode};
 use crate::pac::octospi::{Octospi as Regs, vals};
 #[cfg(octospim_v1)]
@@ -167,6 +172,22 @@ pub struct MultiplexConfig {
     pub req2ack_time: u8,
 }
 
+/// OSPI autopoll configuration
+pub struct AutopollConfig {
+    /// Specifies the value to be compared with the masked status register to get a match.
+    /// This parameter can be any value between 0 and 0xFFFFFFFF.
+    pub match_value: u32,
+    /// Specifies the mask to be applied to the status bytes received.
+    /// This parameter can be any value between 0 and 0xFFFFFFFF,
+    pub match_mask: u32,
+    /// Specifies the method used for determining a match.
+    pub match_mode: AutopollMatchMode,
+    /// Specifies if automatic polling is stopped after a match.
+    pub auto_stop: bool,
+    /// Specifies the number of clock cycles between two read during automatic polling phases.
+    pub interval: u16,
+}
+
 /// Error used for Octospi implementation
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -177,6 +198,8 @@ pub enum OspiError {
     InvalidCommand,
     /// Size zero buffer passed to instruction
     EmptyBuffer,
+    /// The transfer failed
+    TransferError,
 }
 
 /// OSPI driver.
@@ -521,6 +544,11 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         // Configure alternate bytes
         if let Some(ab) = command.alternate_bytes {
             T::REGS.abr().write(|v| v.set_alternate(ab));
+            T::REGS.ccr().modify(|w| {
+                w.set_abmode(PhaseMode::from_bits(command.abwidth.into()));
+                w.set_abdtr(command.abdtr);
+                w.set_absize(SizeInBits::from_bits(command.absize.into()));
+            })
         }
 
         // Configure dummy cycles
@@ -780,7 +808,9 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         peri: Peri<'d2, T2>,
         nss: Peri<'d2, impl NSSPin<T2>>,
         dma: Peri<'d2, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd2,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd2,
         config: Config,
         mux_config: MultiplexConfig,
     ) -> Ospi<'d2, T2, Async> {
@@ -1047,7 +1077,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         d1: Peri<'d, impl D1Pin<T>>,
         nss: Peri<'d, impl NSSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1082,7 +1114,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         d1: Peri<'d, impl D1Pin<T>>,
         nss: Peri<'d, impl NSSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1119,7 +1153,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         d3: Peri<'d, impl D3Pin<T>>,
         nss: Peri<'d, impl NSSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1160,7 +1196,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         d7: Peri<'d, impl D7Pin<T>>,
         nss: Peri<'d, impl NSSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1201,7 +1239,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         d7: Peri<'d, impl D7Pin<T>>,
         nss: Peri<'d, impl NSSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1243,7 +1283,9 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         nss: Peri<'d, impl NSSPin<T>>,
         dqs: Peri<'d, impl DQSPin<T>>,
         dma: Peri<'d, D>,
-        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+        _irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>>
+        + crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+        + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -1423,6 +1465,75 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
 
         Ok(())
     }
+
+    pub async fn autopoll(&mut self, transaction: TransferConfig, config: AutopollConfig) -> Result<(), OspiError> {
+        // Wait for peripheral to be free
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.psmar().write(|w| w.set_match_(config.match_value));
+        T::REGS.psmkr().write(|w| w.set_mask(config.match_mask));
+        T::REGS.pir().write(|w| w.set_interval(config.interval));
+
+        self.configure_command(&transaction, Some(1))?;
+
+        // Clear status flags
+        T::REGS.fcr().write(|w| {
+            w.set_csmf(true);
+            w.set_ctef(true);
+        });
+
+        // Enable interrupts and configure auto polling mode
+        T::REGS.cr().modify(|w| {
+            w.set_smie(true);
+            w.set_teie(true);
+
+            w.set_pmm(config.match_mode.into());
+            w.set_apms(config.auto_stop);
+        });
+
+        let current_address = T::REGS.ar().read().address();
+        let current_instruction = T::REGS.ir().read().instruction();
+
+        T::REGS
+            .cr()
+            .modify(|v| v.set_fmode(vals::FunctionalMode::AUTO_STATUS_POLLING));
+
+        compiler_fence(Ordering::SeqCst);
+
+        // Auto polling begins when the instruction/address is set
+        if T::REGS.ccr().read().admode() == vals::PhaseMode::NONE {
+            T::REGS.ir().write(|v| v.set_instruction(current_instruction));
+        } else {
+            T::REGS.ar().write(|v| v.set_address(current_address));
+        }
+
+        poll_fn(|cx| {
+            T::state().waker.register(cx.waker());
+
+            let bits = T::REGS.sr().read();
+
+            if bits.tef() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Err(OspiError::TransferError))
+            } else if bits.smf() {
+                T::REGS.cr().modify(|w| {
+                    w.set_smie(false);
+                    w.set_teie(false);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
+                });
+
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
 }
 
 impl<'d, T: Instance, M: PeriMode> Drop for Ospi<'d, T, M> {
@@ -1448,19 +1559,26 @@ pub(crate) trait SealedOctospimInstance {
 }
 
 /// OctoSPI instance trait.
-pub(crate) trait SealedInstance {
+trait SealedInstance {
     const REGS: Regs;
+    fn state() -> &'static State;
 }
 
 /// OSPI instance trait.
 #[cfg(octospim_v1)]
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + SealedOctospimInstance {}
+pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + SealedOctospimInstance {
+    /// Interrupt for OSPI instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
 
 /// OSPI instance trait.
 #[cfg(not(octospim_v1))]
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + RccPeripheral {}
+pub trait Instance: SealedInstance + PeripheralType + RccPeripheral {
+    /// Interrupt for OSPI instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
 
 pin_trait!(SckPin, Instance);
 pin_trait!(NckPin, Instance);
@@ -1493,9 +1611,16 @@ foreach_peripheral!(
     (octospi, $inst:ident) => {
         impl SealedInstance for peripherals::$inst {
             const REGS: Regs = crate::pac::$inst;
+
+            fn state() -> &'static State {
+                static STATE: State = State::new();
+                &STATE
+            }
         }
 
-        impl Instance for peripherals::$inst {}
+        impl Instance for peripherals::$inst {
+            type Interrupt = interrupt::typelevel::$inst;
+        }
     };
 );
 
@@ -1528,3 +1653,39 @@ macro_rules! impl_word {
 impl_word!(u8);
 impl_word!(u16);
 impl_word!(u32);
+
+/// OSPI Interrupt handler
+pub struct InterruptHandler<T: Instance> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        let sr = T::REGS.sr().read();
+        let cr = T::REGS.cr().read();
+
+        if sr.tef() && cr.teie() {
+            T::REGS.cr().modify(|w| w.set_teie(false));
+        } else if sr.smf() && cr.smie() {
+            T::REGS.cr().modify(|w| w.set_smie(false));
+        } else {
+            return;
+        }
+
+        compiler_fence(Ordering::SeqCst);
+        T::state().waker.wake();
+    }
+}
+
+struct State {
+    #[allow(unused)]
+    waker: AtomicWaker,
+}
+
+impl State {
+    const fn new() -> Self {
+        Self {
+            waker: AtomicWaker::new(),
+        }
+    }
+}

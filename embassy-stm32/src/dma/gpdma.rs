@@ -1,13 +1,14 @@
 #![macro_use]
 
-use core::future::Future;
+use core::future::{poll_fn, Future};
 use core::pin::Pin;
-use core::sync::atomic::{fence, Ordering};
-use core::task::{Context, Poll};
+use core::sync::atomic::{fence, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
 
 use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 
+use super::ringbuffer::{DmaCtrl, Error, ReadableDmaRingBuffer, WritableDmaRingBuffer};
 use super::word::{Word, WordSize};
 use super::{AnyChannel, Channel, Dir, Request, STATE};
 use crate::interrupt::typelevel::Interrupt;
@@ -145,11 +146,15 @@ impl From<WordSize> for vals::Dw {
 
 pub(crate) struct ChannelState {
     waker: AtomicWaker,
+    circular_address: AtomicUsize,
+    complete_count: AtomicUsize,
 }
 
 impl ChannelState {
     pub(crate) const NEW: Self = Self {
         waker: AtomicWaker::new(),
+        circular_address: AtomicUsize::new(0),
+        complete_count: AtomicUsize::new(0),
     };
 }
 
@@ -195,9 +200,31 @@ impl AnyChannel {
             );
         }
 
-        if sr.suspf() || sr.tcf() {
+        if sr.htf() {
+            //clear the flag for the half transfer complete
+            ch.fcr().modify(|w| w.set_htf(true));
+            state.waker.wake();
+        }
+
+        if sr.tcf() {
+            //clear the flag for the transfer complete
+            ch.fcr().modify(|w| w.set_tcf(true));
+            state.complete_count.fetch_add(1, Ordering::Relaxed);
+            state.waker.wake();
+            return;
+        }
+
+        if sr.suspf() {
+            ch.fcr().modify(|w| w.set_suspf(true));
+
             // disable all xxIEs to prevent the irq from firing again.
-            ch.cr().write(|_| {});
+            ch.cr().modify(|w| {
+                w.set_tcie(false);
+                w.set_useie(false);
+                w.set_dteie(false);
+                w.set_suspie(false);
+                w.set_htie(false);
+            });
 
             // Wake the future. It'll look at tcf and see it's set.
             state.waker.wake();
@@ -411,8 +438,9 @@ impl<'a> Transfer<'a> {
         let info = self.channel.info();
         let ch = info.dma.ch(info.num);
 
+        let en = ch.cr().read().en();
         let sr = ch.sr().read();
-        !sr.tcf() && !sr.suspf()
+        en && !sr.tcf() && !sr.suspf()
     }
 
     /// Gets the total remaining transfers for the channel
@@ -532,8 +560,8 @@ impl RingBuffer {
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {
-                Dir::MemoryToPeripheral => vals::Dreq::DESTINATION_PERIPHERAL,
-                Dir::PeripheralToMemory => vals::Dreq::SOURCE_PERIPHERAL,
+                Dir::MemoryToPeripheral => vals::Dreq::DESTINATIONPERIPHERAL,
+                Dir::PeripheralToMemory => vals::Dreq::SOURCEPERIPHERAL,
             });
             w.set_reqsel(request);
         });
@@ -624,6 +652,9 @@ impl<'a, W: Word> ReadableRingBuffer<'a, W> {
         options: TransferOptions,
     ) -> Self {
         let channel: Peri<'a, AnyChannel> = channel.into();
+
+        #[cfg(dmamux)]
+        super::dmamux::configure_dmamux(&mut channel, request);
 
         let info = channel.info();
 
@@ -756,6 +787,9 @@ impl<'a, W: Word> WritableRingBuffer<'a, W> {
         options: TransferOptions,
     ) -> Self {
         let channel: Peri<'a, AnyChannel> = channel.into();
+
+        #[cfg(dmamux)]
+        super::dmamux::configure_dmamux(&mut channel, request);
 
         let info = channel.info();
 

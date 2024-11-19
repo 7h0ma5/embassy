@@ -4,7 +4,6 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
-use embedded_io_async::ReadReady;
 use futures_util::future::{select, Either};
 
 use super::{rdr, reconfigure, set_baudrate, sr, Config, ConfigError, Error, Info, State, UartRx};
@@ -310,21 +309,4 @@ impl embedded_hal_nb::serial::Read for RingBufferedUartRx<'_> {
 
 impl embedded_hal_nb::serial::ErrorType for RingBufferedUartRx<'_> {
     type Error = Error;
-}
-
-impl ReadReady for RingBufferedUartRx<'_> {
-    fn read_ready(&mut self) -> Result<bool, Self::Error> {
-        let len = self.ring_buf.len().map_err(|e| match e {
-            crate::dma::ringbuffer::Error::Overrun => Self::Error::Overrun,
-            crate::dma::ringbuffer::Error::DmaUnsynced => {
-                error!(
-                    "Ringbuffer error: DmaUNsynced, driver implementation is 
-                    probably bugged please open an issue"
-                );
-                // we report this as overrun since its recoverable in the same way
-                Self::Error::Overrun
-            }
-        })?;
-        Ok(len > 0)
-    }
 }

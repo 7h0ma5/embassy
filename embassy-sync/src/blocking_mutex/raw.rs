@@ -100,6 +100,8 @@ mod thread_mode {
     /// On multi-core systems, a `ThreadModeRawMutex` **is not sufficient** to ensure exclusive access.
     pub struct ThreadModeRawMutex {
         _phantom: PhantomData<()>,
+        #[cfg(feature = "std")]
+        thread_id: std::cell::OnceCell<std::thread::ThreadId>,
     }
 
     unsafe impl Send for ThreadModeRawMutex {}
@@ -108,14 +110,27 @@ mod thread_mode {
     impl ThreadModeRawMutex {
         /// Create a new `ThreadModeRawMutex`.
         pub const fn new() -> Self {
-            Self { _phantom: PhantomData }
+            Self {
+                _phantom: PhantomData,
+                #[cfg(feature = "std")]
+                thread_id: std::cell::OnceCell::new() 
+            }
+        }
+
+        fn in_thread_mode(&self) -> bool {
+            #[cfg(feature = "std")]
+            return *self.thread_id.get_or_init(|| std::thread::current().id()) == std::thread::current().id();
+    
+            #[cfg(not(feature = "std"))]
+            // ICSR.VECTACTIVE == 0
+            return unsafe { (0xE000ED04 as *const u32).read_volatile() } & 0x1FF == 0;
         }
     }
 
     unsafe impl RawMutex for ThreadModeRawMutex {
         const INIT: Self = Self::new();
         fn lock<R>(&self, f: impl FnOnce() -> R) -> R {
-            assert!(in_thread_mode(), "ThreadModeMutex can only be locked from thread mode.");
+            assert!(self.in_thread_mode(), "ThreadModeMutex can only be locked from thread mode.");
 
             f()
         }
@@ -128,21 +143,12 @@ mod thread_mode {
             // T isn't, so without this check a user could create a ThreadModeMutex in thread mode,
             // send it to interrupt context and drop it there, which would "send" a T even if T is not Send.
             assert!(
-                in_thread_mode(),
+                self.in_thread_mode(),
                 "ThreadModeMutex can only be dropped from thread mode."
             );
 
             // Drop of the inner `T` happens after this.
         }
-    }
-
-    pub(crate) fn in_thread_mode() -> bool {
-        #[cfg(feature = "std")]
-        return Some("main") == std::thread::current().name();
-
-        #[cfg(not(feature = "std"))]
-        // ICSR.VECTACTIVE == 0
-        return unsafe { (0xE000ED04 as *const u32).read_volatile() } & 0x1FF == 0;
     }
 }
 #[cfg(any(cortex_m, feature = "std"))]

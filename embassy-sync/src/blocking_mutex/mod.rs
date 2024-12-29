@@ -149,6 +149,8 @@ mod thread_mode_mutex {
     ///
     /// On multi-core systems, a `ThreadModeMutex` **is not sufficient** to ensure exclusive access.
     pub struct ThreadModeMutex<T: ?Sized> {
+        #[cfg(feature = "std")]
+        thread_id: std::cell::OnceCell<std::thread::ThreadId>,
         inner: UnsafeCell<T>,
     }
 
@@ -163,6 +165,8 @@ mod thread_mode_mutex {
         pub const fn new(value: T) -> Self {
             ThreadModeMutex {
                 inner: UnsafeCell::new(value),
+                #[cfg(feature = "std")]
+                thread_id: std::cell::OnceCell::new(),
             }
         }
     }
@@ -184,10 +188,19 @@ mod thread_mode_mutex {
         /// This will panic if not currently running in thread mode.
         pub fn borrow(&self) -> &T {
             assert!(
-                raw::in_thread_mode(),
+                self.in_thread_mode(),
                 "ThreadModeMutex can only be borrowed from thread mode."
             );
             unsafe { &*self.inner.get() }
+        }
+
+        fn in_thread_mode(&self) -> bool {
+            #[cfg(feature = "std")]
+            return *self.thread_id.get_or_init(|| std::thread::current().id()) == std::thread::current().id();
+    
+            #[cfg(not(feature = "std"))]
+            // ICSR.VECTACTIVE == 0
+            return unsafe { (0xE000ED04 as *const u32).read_volatile() } & 0x1FF == 0;
         }
     }
 
@@ -198,7 +211,7 @@ mod thread_mode_mutex {
             // T isn't, so without this check a user could create a ThreadModeMutex in thread mode,
             // send it to interrupt context and drop it there, which would "send" a T even if T is not Send.
             assert!(
-                raw::in_thread_mode(),
+                self.in_thread_mode(),
                 "ThreadModeMutex can only be dropped from thread mode."
             );
 

@@ -55,6 +55,77 @@ pub enum BitOrder {
     MsbFirst,
 }
 
+/// Chip Select (CS) / Slave Select (SS) Polarity
+#[derive(Copy, Clone)]
+pub enum CsPolarity {
+    /// Slave select is active low.
+    ActiveLow,
+    /// Slave select is active high.
+    ActiveHigh,
+}
+
+/// Chip Select (CS) / Slave Select (SS) or Inter-Data idleness
+#[derive(Copy, Clone)]
+#[repr(u8)]
+pub enum Idleness {
+    /// Delay by 0 SPI clock cycles.
+    Delay0Cycles = 0,
+    /// Delay by 1 SPI clock cycle.
+    Delay1Cycle = 1,
+    /// Delay by 2 SPI clock cycles.
+    Delay2Cycles = 2,
+    /// Delay by 3 SPI clock cycles.
+    Delay3Cycles = 3,
+    /// Delay by 4 SPI clock cycles.
+    Delay4Cycles = 4,
+    /// Delay by 5 SPI clock cycles.
+    Delay5Cycles = 5,
+    /// Delay by 6 SPI clock cycles.
+    Delay6Cycles = 6,
+    /// Delay by 7 SPI clock cycles.
+    Delay7Cycles = 7,
+    /// Delay by 8 SPI clock cycles.
+    Delay8Cycles = 8,
+    /// Delay by 9 SPI clock cycles.
+    Delay9Cycles = 9,
+    /// Delay by 10 SPI clock cycles.
+    Delay10Cycles = 10,
+    /// Delay by 11 SPI clock cycles.
+    Delay11Cycles = 11,
+    /// Delay by 12 SPI clock cycles.
+    Delay12Cycles = 12,
+    /// Delay by 13 SPI clock cycles.
+    Delay13Cycles = 13,
+    /// Delay by 14 SPI clock cycles.
+    Delay14Cycles = 14,
+    /// Delay by 15 SPI clock cycles.
+    Delay15Cycles = 15,
+}
+
+impl From<u8> for Idleness {
+    fn from(val: u8) -> Self {
+        match val {
+            0 => Idleness::Delay0Cycles,
+            1 => Idleness::Delay1Cycle,
+            2 => Idleness::Delay2Cycles,
+            3 => Idleness::Delay3Cycles,
+            4 => Idleness::Delay4Cycles,
+            5 => Idleness::Delay5Cycles,
+            6 => Idleness::Delay6Cycles,
+            7 => Idleness::Delay7Cycles,
+            8 => Idleness::Delay8Cycles,
+            9 => Idleness::Delay9Cycles,
+            10 => Idleness::Delay10Cycles,
+            11 => Idleness::Delay11Cycles,
+            12 => Idleness::Delay12Cycles,
+            13 => Idleness::Delay13Cycles,
+            14 => Idleness::Delay14Cycles,
+            15 => Idleness::Delay15Cycles,
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// SPI configuration.
 #[non_exhaustive]
 #[derive(Copy, Clone)]
@@ -73,6 +144,27 @@ pub struct Config {
     /// signal rise/fall speed (slew rate) - defaults to `Medium`.
     /// Increase for high SPI speeds. Change to `Low` to reduce ringing.
     pub rise_fall_speed: Speed,
+    /// Enable internal pullup on chip select (CS) / slave select (CS).
+    pub cs_pull: Pull,
+    /// Enable hardware chip select (CS) / slave select (SS) output.
+    pub cs_output_enabled: bool,
+    /// Sets the chip select polarity if a hardware CS (SS) pin has been set.
+    pub cs_polarity: CsPolarity,
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
+    /// Specifies an extra delay, expressed in number of SPI clock cycle periods,
+    /// inserted additionally between active edge of CS (SS) opening a session and the
+    /// beginning of the first data frame of the session when the slave select
+    /// output is enabled.
+    pub cs_idleness: Idleness,
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
+    /// Specifies the minimum time delay (expressed in SPI clock cycles periods)
+    /// inserted between two consecutive data frames.
+    pub inter_data_idleness: Idleness,
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
+    /// When the CS (SS) output managemnent is enabled, SPI data frames are interleaved
+    /// with CS (SS) non active pulses if the inter data idleness is set to more than 0 cycles.
+    /// When disabled, CS (SS) is kept at active level till the data transfer is completed.
+    pub cs_output_management: bool,
 }
 
 impl Default for Config {
@@ -83,6 +175,16 @@ impl Default for Config {
             frequency: Hertz(1_000_000),
             miso_pull: Pull::None,
             rise_fall_speed: Speed::VeryHigh,
+            cs_pull: Pull::None,
+            cs_output_enabled: false,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_polarity: CsPolarity::ActiveHigh,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_idleness: Idleness::Delay0Cycles,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            inter_data_idleness: Idleness::Delay0Cycles,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_output_management: false,
         }
     }
 }
@@ -106,6 +208,23 @@ impl Config {
         match self.bit_order {
             BitOrder::LsbFirst => vals::Lsbfirst::LSBFIRST,
             BitOrder::MsbFirst => vals::Lsbfirst::MSBFIRST,
+        }
+    }
+
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
+    fn raw_cs_polarity(&self) -> vals::Ssiop {
+        match self.cs_polarity {
+            CsPolarity::ActiveLow => vals::Ssiop::ACTIVELOW,
+            CsPolarity::ActiveHigh => vals::Ssiop::ACTIVEHIGH,
+        }
+    }
+
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
+    fn raw_cs_output_management(&self) -> vals::Ssom {
+        if self.cs_output_management {
+            vals::Ssom::NOTASSERTED
+        } else {
+            vals::Ssom::ASSERTED
         }
     }
 
@@ -133,6 +252,7 @@ pub struct Spi<'d, M: PeriMode> {
     sck: Option<PeripheralRef<'d, AnyPin>>,
     mosi: Option<PeripheralRef<'d, AnyPin>>,
     miso: Option<PeripheralRef<'d, AnyPin>>,
+    cs: Option<PeripheralRef<'d, AnyPin>>,
     tx_dma: Option<ChannelAndRequest<'d>>,
     rx_dma: Option<ChannelAndRequest<'d>>,
     _phantom: PhantomData<M>,
@@ -146,6 +266,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         sck: Option<PeripheralRef<'d, AnyPin>>,
         mosi: Option<PeripheralRef<'d, AnyPin>>,
         miso: Option<PeripheralRef<'d, AnyPin>>,
+        cs: Option<PeripheralRef<'d, AnyPin>>,
         tx_dma: Option<ChannelAndRequest<'d>>,
         rx_dma: Option<ChannelAndRequest<'d>>,
         config: Config,
@@ -156,6 +277,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             sck,
             mosi,
             miso,
+            cs,
             tx_dma,
             rx_dma,
             current_word_size: <u8 as SealedWord>::CONFIG,
@@ -171,6 +293,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         let cpha = config.raw_phase();
         let cpol = config.raw_polarity();
         let lsbfirst = config.raw_byte_order();
+        let ssoe = config.cs_output_enabled;
 
         self.info.rcc.enable_and_reset();
 
@@ -178,7 +301,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         #[cfg(any(spi_v1, spi_f1))]
         {
             regs.cr2().modify(|w| {
-                w.set_ssoe(false);
+                w.set_ssoe(ssoe);
             });
             regs.cr1().modify(|w| {
                 w.set_cpha(cpha);
@@ -205,7 +328,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
                 let (ds, frxth) = <u8 as SealedWord>::CONFIG;
                 w.set_frxth(frxth);
                 w.set_ds(ds);
-                w.set_ssoe(false);
+                w.set_ssoe(ssoe);
             });
             regs.cr1().modify(|w| {
                 w.set_cpha(cpha);
@@ -223,21 +346,30 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         }
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
         {
+            let midi = config.inter_data_idleness as u8;
+            let mssi = config.cs_idleness as u8;
+            let ssiop = config.raw_cs_polarity();
+            let ssom = config.raw_cs_output_management();
+            let ssm = !config.cs_output_enabled;
+            let ssi = match config.cs_polarity {
+                CsPolarity::ActiveHigh => false,
+                CsPolarity::ActiveLow => true,
+            };
+
             regs.ifcr().write(|w| w.0 = 0xffff_ffff);
             regs.cfg2().modify(|w| {
-                //w.set_ssoe(true);
-                w.set_ssoe(false);
+                w.set_ssoe(ssoe);
                 w.set_cpha(cpha);
                 w.set_cpol(cpol);
                 w.set_lsbfirst(lsbfirst);
-                w.set_ssm(true);
+                w.set_ssm(ssm);
                 w.set_master(vals::Master::MASTER);
                 w.set_comm(vals::Comm::FULL_DUPLEX);
-                w.set_ssom(vals::Ssom::ASSERTED);
-                w.set_midi(0);
-                w.set_mssi(0);
+                w.set_ssom(ssom);
+                w.set_midi(midi);
+                w.set_mssi(mssi);
                 w.set_afcntr(true);
-                w.set_ssiop(vals::Ssiop::ACTIVE_HIGH);
+                w.set_ssiop(ssiop);
             });
             regs.cfg1().modify(|w| {
                 w.set_crcen(false);
@@ -249,7 +381,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
                 w.set_tsize(0);
             });
             regs.cr1().modify(|w| {
-                w.set_ssi(false);
+                w.set_ssi(ssi);
                 w.set_spe(true);
             });
         }
@@ -259,8 +391,8 @@ impl<'d, M: PeriMode> Spi<'d, M> {
     pub fn set_config(&mut self, config: &Config) -> Result<(), ()> {
         let cpha = config.raw_phase();
         let cpol = config.raw_polarity();
-
         let lsbfirst = config.raw_byte_order();
+        let ssoe = config.cs_output_enabled;
 
         let br = compute_baud_rate(self.kernel_clock, config.frequency);
 
@@ -281,18 +413,36 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             w.set_cpol(cpol);
             w.set_br(br);
             w.set_lsbfirst(lsbfirst);
+            w.set_ssoe(ssoe);
         });
 
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
         {
+            let ssiop = config.raw_cs_polarity();
+            let mssi = config.cs_idleness as u8;
+            let midi = config.inter_data_idleness as u8;
+            let ssm = !config.cs_output_enabled;
+            let ssi = match config.cs_polarity {
+                CsPolarity::ActiveHigh => false,
+                CsPolarity::ActiveLow => true,
+            };
+
             self.info.regs.cfg2().modify(|w| {
                 w.set_cpha(cpha);
                 w.set_cpol(cpol);
                 w.set_lsbfirst(lsbfirst);
+                w.set_ssoe(ssoe);
+                w.set_ssiop(ssiop);
+                w.set_mssi(mssi);
+                w.set_midi(midi);
+                w.set_ssm(ssm);
             });
             self.info.regs.cfg1().modify(|w| {
                 w.set_mbr(br);
             });
+            self.info.regs.cr1().modify(|w|{
+                w.set_ssi(ssi);
+            })
         }
         Ok(())
     }
@@ -328,10 +478,35 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             Some(pin) => pin.pull(),
         };
 
+        let cs_pull = match &self.cs {
+            None => Pull::None,
+            Some(pin) => pin.pull(),
+        };
+
+        let cs_output_enabled = cfg.ssoe();
+
         #[cfg(any(spi_v1, spi_f1, spi_v2))]
         let br = cfg.br();
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
         let br = cfg1.mbr();
+
+        #[cfg(any(spi_v3, spi_v4, spi_v5))]
+        let cs_polarity = if cfg.ssiop() == vals::Ssiop::ACTIVELOW {
+            CsPolarity::ActiveLow
+        } else {
+            CsPolarity::ActiveHigh
+        };
+        #[cfg(any(spi_v3, spi_v4, spi_v5))]
+        let cs_idleness = Idleness::from(cfg.mssi());
+        #[cfg(any(spi_v3, spi_v4, spi_v5))]
+        let inter_data_idleness = Idleness::from(cfg.midi());
+        #[cfg(any(spi_v3, spi_v4, spi_v5))]
+        let cs_output_management = if cfg.ssom() == vals::Ssom::NOTASSERTED {
+            true
+        } else {
+            false
+        };
+
 
         let frequency = compute_frequency(self.kernel_clock, br);
 
@@ -341,6 +516,16 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             frequency,
             miso_pull,
             rise_fall_speed: self.rise_fall_speed,
+            cs_pull,
+            cs_output_enabled,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_polarity,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_idleness,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            inter_data_idleness,
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            cs_output_management,
         }
     }
 
@@ -478,6 +663,28 @@ impl<'d> Spi<'d, Blocking> {
             new_pin!(miso, AfType::input(config.miso_pull)),
             None,
             None,
+            None,
+            config,
+        )
+    }
+
+    /// Create a new blocking SPI driver with hardware controlled CS pin.
+    pub fn new_blocking_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            new_pin!(mosi, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            new_pin!(miso, AfType::input(config.miso_pull)),
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            None,
+            None,
             config,
         )
     }
@@ -494,6 +701,27 @@ impl<'d> Spi<'d, Blocking> {
             new_pin!(sck, config.sck_af()),
             None,
             new_pin!(miso, AfType::input(config.miso_pull)),
+            None,
+            None,
+            None,
+            config,
+        )
+    }
+
+    /// Create a new blocking SPI driver, in RX-only mode (only MISO ans CS pin, no MOSI).
+    pub fn new_blocking_rxonly_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            None,
+            new_pin!(miso, AfType::input(config.miso_pull)),
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
             None,
             None,
             config,
@@ -514,6 +742,27 @@ impl<'d> Spi<'d, Blocking> {
             None,
             None,
             None,
+            None,
+            config,
+        )
+    }
+
+    /// Create a new blocking SPI driver, in TX-only mode (only MOSI and CS pin, no MISO).
+    pub fn new_blocking_txonly_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            new_pin!(mosi, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            None,
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            None,
+            None,
             config,
         )
     }
@@ -530,6 +779,7 @@ impl<'d> Spi<'d, Blocking> {
             peri,
             None,
             new_pin!(mosi, AfType::output(OutputType::PushPull, config.rise_fall_speed)),
+            None,
             None,
             None,
             None,
@@ -554,6 +804,30 @@ impl<'d> Spi<'d, Async> {
             new_pin!(sck, config.sck_af()),
             new_pin!(mosi, AfType::output(OutputType::PushPull, config.rise_fall_speed)),
             new_pin!(miso, AfType::input(config.miso_pull)),
+            None,
+            new_dma!(tx_dma),
+            new_dma!(rx_dma),
+            config,
+        )
+    }
+
+    /// Create a new SPI driver with hardware controlled CS pin.
+    pub fn new_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            new_pin!(mosi, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            new_pin!(miso, AfType::input(config.miso_pull)),
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
             new_dma!(tx_dma),
             new_dma!(rx_dma),
             config,
@@ -574,6 +848,32 @@ impl<'d> Spi<'d, Async> {
             new_pin!(sck, config.sck_af()),
             None,
             new_pin!(miso, AfType::input(config.miso_pull)),
+            None,
+            #[cfg(any(spi_v1, spi_f1, spi_v2))]
+            new_dma!(tx_dma),
+            #[cfg(any(spi_v3, spi_v4, spi_v5))]
+            None,
+            new_dma!(rx_dma),
+            config,
+        )
+    }
+
+    /// Create a new SPI driver, in RX-only mode (only MISO and CS pin, no MOSI).
+    pub fn new_rxonly_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        #[cfg(any(spi_v1, spi_f1, spi_v2))] tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            None,
+            new_pin!(miso, AfType::input(config.miso_pull)),
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
             #[cfg(any(spi_v1, spi_f1, spi_v2))]
             new_dma!(tx_dma),
             #[cfg(any(spi_v3, spi_v4, spi_v5))]
@@ -596,6 +896,28 @@ impl<'d> Spi<'d, Async> {
             new_pin!(sck, config.sck_af()),
             new_pin!(mosi, AfType::output(OutputType::PushPull, config.rise_fall_speed)),
             None,
+            None,
+            new_dma!(tx_dma),
+            None,
+            config,
+        )
+    }
+
+    /// Create a new SPI driver, in TX-only mode (only MOSI and CS pin, no MISO).
+    pub fn new_txonly_cs<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        cs: impl Peripheral<P = impl CsPin<T>> + 'd,
+        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            peri,
+            new_pin!(sck, config.sck_af()),
+            new_pin!(mosi, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
+            None,
+            new_pin!(cs, AfType::output(OutputType::PushPull, Speed::VeryHigh)),
             new_dma!(tx_dma),
             None,
             config,
@@ -615,6 +937,7 @@ impl<'d> Spi<'d, Async> {
             peri,
             None,
             new_pin!(mosi, AfType::output(OutputType::PushPull, config.rise_fall_speed)),
+            None,
             None,
             new_dma!(tx_dma),
             None,
@@ -639,7 +962,7 @@ impl<'d> Spi<'d, Async> {
         config.bit_order = BitOrder::MsbFirst;
         config.frequency = freq;
 
-        Self::new_inner(peri, None, None, None, new_dma!(tx_dma), new_dma!(rx_dma), config)
+        Self::new_inner(peri, None, None, None, None, new_dma!(tx_dma), new_dma!(rx_dma), config)
     }
 
     #[allow(dead_code)]
@@ -649,7 +972,7 @@ impl<'d> Spi<'d, Async> {
         rx_dma: Option<ChannelAndRequest<'d>>,
         config: Config,
     ) -> Self {
-        Self::new_inner(peri, None, None, None, tx_dma, rx_dma, config)
+        Self::new_inner(peri, None, None, None, None, tx_dma, rx_dma, config)
     }
 
     /// SPI write, using DMA.

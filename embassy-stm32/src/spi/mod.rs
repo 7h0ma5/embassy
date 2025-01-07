@@ -9,7 +9,7 @@ use embassy_futures::join::join;
 pub use embedded_hal_02::spi::{MODE_0, MODE_1, MODE_2, MODE_3, Mode, Phase, Polarity};
 
 use crate::Peri;
-use crate::dma::{ChannelAndRequest, word};
+use crate::dma::{ChannelAndRequest, TransferOptions, word};
 use crate::gpio::{AfType, Flex, OutputType, Pull, SealedPin as _, Speed};
 use crate::mode::{Async, Blocking, Mode as PeriMode};
 use crate::pac::spi::{Spi as Regs, regs, vals};
@@ -312,6 +312,8 @@ pub struct Spi<'d, M: PeriMode, CM: CommunicationMode> {
     _phantom: PhantomData<(M, CM)>,
     current_word_size: word_impl::Config,
     gpio_speed: Speed,
+    rx_transfer_options: TransferOptions,
+    tx_transfer_options: TransferOptions,
 }
 
 impl<'d, M: PeriMode, CM: CommunicationMode> Spi<'d, M, CM> {
@@ -337,6 +339,8 @@ impl<'d, M: PeriMode, CM: CommunicationMode> Spi<'d, M, CM> {
             current_word_size: <u8 as SealedWord>::CONFIG,
             _phantom: PhantomData,
             gpio_speed: config.gpio_speed,
+            rx_transfer_options: Default::default(),
+            tx_transfer_options: Default::default(),
         };
         this.enable_and_init(config);
         this
@@ -1241,6 +1245,26 @@ impl<'d> Spi<'d, Async, Master> {
 }
 
 impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
+    /// Returns the current TX DMA transfer options.
+    pub fn tx_transfer_options(&mut self) -> TransferOptions {
+        self.tx_transfer_options
+    }
+
+    /// Set the TX DMA transfer options.
+    pub fn set_tx_transfer_options(&mut self, options: TransferOptions) {
+        self.tx_transfer_options = options;
+    }
+
+    /// Returns the current RX DMA transfer options.
+    pub fn rx_transfer_options(&mut self) -> TransferOptions {
+        self.rx_transfer_options
+    }
+
+    /// Set the RX DMA transfer options.
+    pub fn set_rx_transfer_options(&mut self, options: TransferOptions) {
+        self.rx_transfer_options = options;
+    }
+
     /// SPI write, using DMA.
     pub async fn write<W: Word>(&mut self, data: &[W]) -> Result<(), Error> {
         let _scoped_wake_guard = self.info.rcc.wake_guard();
@@ -1254,7 +1278,12 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
         self.set_word_size(W::CONFIG);
 
         let tx_dst = self.info.regs.tx_ptr();
-        let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write(data, tx_dst, Default::default()) };
+        let tx_f = unsafe {
+            self.tx_dma
+                .as_mut()
+                .unwrap()
+                .write(data, tx_dst, self.tx_transfer_options)
+        };
 
         set_txdmaen(self.info.regs, true);
         self.info.regs.cr1().modify(|w| {
@@ -1318,7 +1347,7 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
                 self.rx_dma
                     .as_mut()
                     .unwrap()
-                    .read(rx_src, &mut chunk, Default::default())
+                    .read(rx_src, &mut chunk, self.rx_transfer_options)
             };
 
             regs.cr2().modify(|w| {
@@ -1383,15 +1412,22 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
         let clock_byte_count = data.len();
 
         let rx_src = self.info.regs.rx_ptr();
-        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read(rx_src, data, Default::default()) };
+        let rx_f = unsafe {
+            self.rx_dma
+                .as_mut()
+                .unwrap()
+                .read(rx_src, data, self.rx_transfer_options)
+        };
 
         let tx_dst = self.info.regs.tx_ptr();
         let clock_byte = W::default();
         let tx_f = unsafe {
-            self.tx_dma
-                .as_mut()
-                .unwrap()
-                .write_repeated(&clock_byte, clock_byte_count, tx_dst, Default::default())
+            self.tx_dma.as_mut().unwrap().write_repeated(
+                &clock_byte,
+                clock_byte_count,
+                tx_dst,
+                self.tx_transfer_options,
+            )
         };
 
         set_txdmaen(self.info.regs, true);
@@ -1430,14 +1466,19 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
         set_rxdmaen(self.info.regs, true);
 
         let rx_src = self.info.regs.rx_ptr::<W>();
-        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, Default::default()) };
+        let rx_f = unsafe {
+            self.rx_dma
+                .as_mut()
+                .unwrap()
+                .read_raw(rx_src, read, self.rx_transfer_options)
+        };
 
         let tx_dst: *mut W = self.info.regs.tx_ptr();
         let tx_f = unsafe {
             self.tx_dma
                 .as_mut()
                 .unwrap()
-                .write_raw(write, tx_dst, Default::default())
+                .write_raw(write, tx_dst, self.tx_transfer_options)
         };
 
         set_txdmaen(self.info.regs, true);

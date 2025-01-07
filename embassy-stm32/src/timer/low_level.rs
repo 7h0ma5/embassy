@@ -143,6 +143,11 @@ pub enum OutputCompareMode {
     /// TIMx_CNT<TIMx_CCRx else active. In downcounting, channel is active as long as
     /// TIMx_CNT>TIMx_CCRx else inactive.
     PwmMode2,
+    #[cfg(stm32u5)]
+    /// Pulse on compare mode - A signal with programmable pulse width will be generated
+    /// upon a compare match event.
+    /// Note: This mode is only available on channel 3 and 4 of general-purpose timers.
+    PulseOnCompare,
     // TODO: there's more modes here depending on the chip family.
 }
 
@@ -157,6 +162,10 @@ impl From<OutputCompareMode> for stm32_metapac::timer::vals::Ocm {
             OutputCompareMode::ForceActive => stm32_metapac::timer::vals::Ocm::FORCE_ACTIVE,
             OutputCompareMode::PwmMode1 => stm32_metapac::timer::vals::Ocm::PWM_MODE1,
             OutputCompareMode::PwmMode2 => stm32_metapac::timer::vals::Ocm::PWM_MODE2,
+            // The STM32U5 reference manual states that the output compare mode has to be set to
+            // 0b1010 for pulse on compare mode, although even in there this value is listed as reserved.
+            #[cfg(timer_v2)]
+            OutputCompareMode::PulseOnCompare => stm32_metapac::timer::vals::Ocm::_RESERVED1,
         }
     }
 }
@@ -175,6 +184,39 @@ impl From<OutputPolarity> for bool {
         match mode {
             OutputPolarity::ActiveHigh => false,
             OutputPolarity::ActiveLow => true,
+        }
+    }
+}
+
+/// Pulse width prescaler.
+#[cfg(timer_v2)]
+#[allow(missing_docs)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub enum PulseWidthPrescaler {
+    Div1 = 0,
+    Div2 = 1,
+    Div4 = 2,
+    Div8 = 3,
+    Div16 = 4,
+    Div32 = 5,
+    Div64 = 6,
+    Div128 = 7
+}
+
+#[cfg(timer_v2)]
+impl From<u8> for PulseWidthPrescaler {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => PulseWidthPrescaler::Div1,
+            1 => PulseWidthPrescaler::Div2,
+            2 => PulseWidthPrescaler::Div4,
+            3 => PulseWidthPrescaler::Div8,
+            4 => PulseWidthPrescaler::Div16,
+            5 => PulseWidthPrescaler::Div32,
+            6 => PulseWidthPrescaler::Div64,
+            7 => PulseWidthPrescaler::Div128,
+            _ => unreachable!()
         }
     }
 }
@@ -648,6 +690,30 @@ impl<'d, T: GeneralInstance4Channel> Timer<'d, T> {
     /// Set Timer Trigger Source
     pub fn set_trigger_source(&self, ts: TriggerSource) {
         self.regs_gp16().smcr().modify(|r| r.set_ts(ts));
+    }
+
+    /// Get the pulse width of the generated pulses in pulse on compare mode
+    #[cfg(timer_v2)]
+    pub fn get_pulse_width(&self) -> u8 {
+        self.regs_gp16().ecr().read().pw()
+    }
+
+    /// Set the pulse width of the generated pulses in pulse on compare mode
+    #[cfg(timer_v2)]
+    pub fn set_pulse_width(&self, pw: u8) {
+        self.regs_gp16().ecr().modify(|r| r.set_pw(pw));
+    }
+
+    /// Get the prescaler of the pulse generator for pulse on compare mode
+    #[cfg(timer_v2)]
+    pub fn get_pulse_width_prescaler(&self) -> PulseWidthPrescaler {
+        self.regs_gp16().ecr().read().pwprsc().into()
+    }
+   
+    /// Set the prescaler of the pulse generator for pulse on compare mode
+    #[cfg(timer_v2)]
+    pub fn set_pulse_width_prescaler(&self, prsc: PulseWidthPrescaler) {
+        self.regs_gp16().ecr().modify(|r| r.set_pwprsc(prsc as u8));
     }
 }
 

@@ -74,9 +74,9 @@ pub enum TransferPriority {
 impl From<TransferPriority> for vals::Prio {
     fn from(value: TransferPriority) -> Self {
         match value {
-            TransferPriority::LowWithLowWeight => Self::LOWWITHMIDWEIGHT,
-            TransferPriority::LowWithMidWeight => Self::LOWWITHMIDWEIGHT,
-            TransferPriority::LowWithHighWeigt => Self::LOWWITHHIGHWEIGHT,
+            TransferPriority::LowWithLowWeight => Self::LOW_WITH_MID_WEIGHT,
+            TransferPriority::LowWithMidWeight => Self::LOW_WITH_MID_WEIGHT,
+            TransferPriority::LowWithHighWeigt => Self::LOW_WITH_HIGH_WEIGHT,
             TransferPriority::High => Self::HIGH,
         }
     }
@@ -98,8 +98,8 @@ impl From<TriggerPolarity> for vals::Trigpol {
     fn from(value: TriggerPolarity) -> Self {
         match value {
             TriggerPolarity::None => Self::NONE,
-            TriggerPolarity::RisingEdge => Self::RISINGEDGE,
-            TriggerPolarity::FallingEdge => Self::FALLINGEDGE,
+            TriggerPolarity::RisingEdge => Self::RISING_EDGE,
+            TriggerPolarity::FallingEdge => Self::FALLING_EDGE,
         }
     }
 }
@@ -128,7 +128,7 @@ impl From<TriggerMode> for vals::Trigm {
         match value {
             TriggerMode::Block => Self::BLOCK,
             TriggerMode::Burst => Self::BURST,
-            TriggerMode::LinkedListItem => Self::LINKEDLISTITEM,
+            TriggerMode::LinkedListItem => Self::LINKED_LIST_ITEM,
             TriggerMode::Block2D => Self::_2DBLOCK,
         }
     }
@@ -566,8 +566,8 @@ impl RingBuffer {
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {
-                Dir::MemoryToPeripheral => vals::Dreq::DESTINATIONPERIPHERAL,
-                Dir::PeripheralToMemory => vals::Dreq::SOURCEPERIPHERAL,
+                Dir::MemoryToPeripheral => vals::Dreq::DESTINATION_PERIPHERAL,
+                Dir::PeripheralToMemory => vals::Dreq::SOURCE_PERIPHERAL,
             });
             w.set_reqsel(request);
         });

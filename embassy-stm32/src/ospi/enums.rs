@@ -397,8 +397,8 @@ pub enum AutopollMatchMode {
 impl From<AutopollMatchMode> for crate::pac::octospi::vals::MatchMode {
     fn from(value: AutopollMatchMode) -> Self {
         match value {
-            AutopollMatchMode::And => Self::MATCHAND,
-            AutopollMatchMode::Or => Self::MATCHOR
+            AutopollMatchMode::And => Self::MATCH_AND,
+            AutopollMatchMode::Or => Self::MATCH_OR
         }
     }
 }

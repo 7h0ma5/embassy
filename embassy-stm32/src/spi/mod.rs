@@ -214,15 +214,15 @@ impl Config {
     #[cfg(any(spi_v3, spi_v4, spi_v5))]
     fn raw_cs_polarity(&self) -> vals::Ssiop {
         match self.cs_polarity {
-            CsPolarity::ActiveLow => vals::Ssiop::ACTIVELOW,
-            CsPolarity::ActiveHigh => vals::Ssiop::ACTIVEHIGH,
+            CsPolarity::ActiveLow => vals::Ssiop::ACTIVE_LOW,
+            CsPolarity::ActiveHigh => vals::Ssiop::ACTIVE_HIGH,
         }
     }
 
     #[cfg(any(spi_v3, spi_v4, spi_v5))]
     fn raw_cs_output_management(&self) -> vals::Ssom {
         if self.cs_output_management {
-            vals::Ssom::NOTASSERTED
+            vals::Ssom::NOT_ASSERTED
         } else {
             vals::Ssom::ASSERTED
         }
@@ -495,7 +495,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         let br = cfg1.mbr();
 
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
-        let cs_polarity = if cfg.ssiop() == vals::Ssiop::ACTIVELOW {
+        let cs_polarity = if cfg.ssiop() == vals::Ssiop::ACTIVE_LOW {
             CsPolarity::ActiveLow
         } else {
             CsPolarity::ActiveHigh
@@ -505,7 +505,7 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
         let inter_data_idleness = Idleness::from(cfg.midi());
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
-        let cs_output_management = if cfg.ssom() == vals::Ssom::NOTASSERTED {
+        let cs_output_management = if cfg.ssom() == vals::Ssom::NOT_ASSERTED {
             true
         } else {
             false

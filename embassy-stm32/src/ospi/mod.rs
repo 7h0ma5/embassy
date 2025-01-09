@@ -522,7 +522,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
 
         T::REGS.cr().modify(|w| {
-            w.set_fmode(vals::FunctionalMode::INDIRECTWRITE);
+            w.set_fmode(vals::FunctionalMode::INDIRECT_WRITE);
         });
 
         // Configure alternate bytes
@@ -873,7 +873,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
 
         T::REGS.cr().modify(|w| {
-            w.set_fmode(vals::FunctionalMode::MEMORYMAPPED);
+            w.set_fmode(vals::FunctionalMode::MEMORY_MAPPED);
             w.set_en(true);
         });
 
@@ -1458,7 +1458,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
         let current_address = T::REGS.ar().read().address();
         let current_instruction = T::REGS.ir().read().instruction();
 
-        T::REGS.cr().modify(|v| v.set_fmode(vals::FunctionalMode::AUTOSTATUSPOLLING));
+        T::REGS.cr().modify(|v| v.set_fmode(vals::FunctionalMode::AUTO_STATUS_POLLING));
 
         compiler_fence(Ordering::SeqCst);
 
@@ -1478,7 +1478,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
                 T::REGS.cr().modify(|w| {
                     w.set_smie(false);
                     w.set_teie(false);
-                    w.set_fmode(vals::FunctionalMode::INDIRECTREAD);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
                 });
 
                 Poll::Ready(Err(OspiError::TransferError))
@@ -1486,7 +1486,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
                 T::REGS.cr().modify(|w| {
                     w.set_smie(false);
                     w.set_teie(false);
-                    w.set_fmode(vals::FunctionalMode::INDIRECTREAD);
+                    w.set_fmode(vals::FunctionalMode::INDIRECT_READ);
                 });
 
                 Poll::Ready(Ok(()))

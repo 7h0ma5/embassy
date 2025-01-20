@@ -224,6 +224,14 @@ pub struct AutopollConfig {
     pub interval: u16,
 }
 
+/// OSPI multiplex configuration
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MultiplexConfig {
+    /// Time between two OCTOSPI requests and the OCTOSPIM acknowledge.
+    pub req2ack_time: u8,
+}
+
 /// Error used for Octospi implementation
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -455,88 +463,62 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         }
     }
 
-    fn new_inner(
-        peri: Peri<'d, T>,
-        d0: Option<Flex<'d>>,
-        d1: Option<Flex<'d>>,
-        d2: Option<Flex<'d>>,
-        d3: Option<Flex<'d>>,
-        d4: Option<Flex<'d>>,
-        d5: Option<Flex<'d>>,
-        d6: Option<Flex<'d>>,
-        d7: Option<Flex<'d>>,
-        sck: Option<Flex<'d>>,
-        nss: Option<Flex<'d>>,
-        dqs: Option<Flex<'d>>,
-        dma: Option<ChannelAndRequest<'d>>,
-        config: Config,
-        width: OspiWidth,
-        dual_quad: bool,
-        #[cfg(octospim_v1)] iol_pgroup: u8,
-        #[cfg(octospim_v1)] ioh_pgroup: Option<u8>,
-        #[cfg(octospim_v1)] ctrl_pgroup: u8,
-    ) -> Self {
-        #[cfg(octospim_v1)]
-        trace!("OCTOSPI_IDX: {:?}", T::OCTOSPI_IDX);
+    #[cfg(octospim_v1)]
+    fn configure_octospim_clk_group(physical_group: u8, has_dqs: bool, signal_src: bool) {
+        if Self::octospim_uses_p2(physical_group) {
+            T::OCTOSPIM_REGS.p2cr().modify(|w| {
+                w.set_clken(true);
+                w.set_clksrc(signal_src);
 
-        #[cfg(octospim_v1)]
-        let (octospi1_was_enabled, octospi2_was_enabled) = {
-            trace!("IOL_PGROUP: 0b{:02b}", iol_pgroup);
-            if let Some(ioh_pgroup) = ioh_pgroup {
-                trace!("IOH_PGROUP: 0b{:02b}", ioh_pgroup);
-            } else {
-                trace!("IOH_PGROUP: N/A");
-            }
-            trace!("CLK/NCS/DQS CTRL_PGROUP: 0b{:02b}", ctrl_pgroup);
-
-            // RCC for octospim should be enabled before writing register
-            #[cfg(stm32l4)]
-            crate::pac::RCC.ahb2smenr().modify(|w| w.set_octospimsmen(true));
-            #[cfg(stm32u5)]
-            crate::pac::RCC.ahb2enr1().modify(|w| w.set_octospimen(true));
-            #[cfg(not(any(stm32l4, stm32u5)))]
-            crate::pac::RCC.ahb3enr().modify(|w| w.set_iomngren(true));
-
-            let previously_enabled_instances = Self::disable_octospis_for_octospim_config();
-            trace!(
-                "OCTOSPI1_ENABLED: {:?}, OCTOSPI2_ENABLED: {:?}",
-                previously_enabled_instances.0, previously_enabled_instances.1
-            );
-
-            // OctoSPI IO Manager has been enabled before
-            T::OCTOSPIM_REGS.cr().modify(|w| {
-                w.set_muxen(false);
-                w.set_req2ack_time(0xff);
+                if has_dqs {
+                    w.set_dqsen(true);
+                    w.set_dqssrc(signal_src);
+                } else {
+                    w.set_dqsen(false);
+                }
             });
+        } else {
+            T::OCTOSPIM_REGS.p1cr().modify(|w| {
+                w.set_clken(true);
+                w.set_clksrc(signal_src);
 
-            Self::configure_octospim_control_group(ctrl_pgroup, dqs.is_some());
-            Self::configure_octospim_data_group(iol_pgroup, Self::octospim_low_data_src());
+                if has_dqs {
+                    w.set_dqsen(true);
+                    w.set_dqssrc(signal_src);
+                } else {
+                    w.set_dqsen(false);
+                }
+            });
+        }
+    }
 
-            if dual_quad {
-                debug_assert!(
-                    ioh_pgroup.is_some(),
-                    "dual-quad must set ioh_pgroup for the second flash chip"
-                );
-            }
+    #[cfg(octospim_v1)]
+    fn configure_octospim_ncs_group(physical_group: u8, signal_src: bool) {
+        if Self::octospim_uses_p2(physical_group) {
+            T::OCTOSPIM_REGS.p2cr().modify(|w| {
+                w.set_ncsen(true);
+                w.set_ncssrc(signal_src);
+            });
+        } else {
+            T::OCTOSPIM_REGS.p1cr().modify(|w| {
+                w.set_ncsen(true);
+                w.set_ncssrc(signal_src);
+            });
+        }
+    }
 
-            if let Some(ioh_pgroup) = ioh_pgroup {
-                Self::configure_octospim_data_group(ioh_pgroup, Self::octospim_high_data_src());
-            }
+    #[cfg(octospim_v1)]
+    fn enable_octospim_clock() {
+        // RCC for octospim should be enabled before writing register
+        #[cfg(stm32l4)]
+        crate::pac::RCC.ahb2smenr().modify(|w| w.set_octospimsmen(true));
+        #[cfg(stm32u5)]
+        crate::pac::RCC.ahb2enr1().modify(|w| w.set_octospimen(true));
+        #[cfg(not(any(stm32l4, stm32u5)))]
+        crate::pac::RCC.ahb3enr().modify(|w| w.set_iomngren(true));
+    }
 
-            let cr = T::OCTOSPIM_REGS.cr().read();
-            let p1cr = T::OCTOSPIM_REGS.p1cr().read();
-            let p2cr = T::OCTOSPIM_REGS.p2cr().read();
-            debug!("OCTOSPIM_CR: 0x{:08X} - {:?}", cr.0, cr);
-            debug!("OCTOSPIM_P1CR: 0x{:08X} - {:?}", p1cr.0, p1cr);
-            debug!("OCTOSPIM_P2CR: 0x{:08X} - {:?}", p2cr.0, p2cr);
-
-            previously_enabled_instances
-        };
-
-        // System configuration
-        rcc::enable_and_reset::<T>();
-        while T::REGS.sr().read().busy() {}
-
+    fn configure_ospi_registers(config: Config, dual_quad: bool) {
         // Device configuration
         T::REGS.dcr1().modify(|w| {
             w.set_devsize(config.device_size.into());
@@ -588,24 +570,12 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
 
         T::Interrupt::unpend();
         unsafe { T::Interrupt::enable() };
+    }
 
-        // Enable peripheral
-        #[cfg(not(octospim_v1))]
-        {
-            T::REGS.cr().modify(|w| {
-                w.set_en(true);
-            });
-        }
-
-        #[cfg(octospim_v1)]
-        {
-            Self::restore_octospis_after_config(octospi1_was_enabled, octospi2_was_enabled);
-
-            T::OCTOSPIM_REGS.cr().modify(|w| {
-                w.set_req2ack_time(0x1);
-                w.set_muxen(true);
-            });
-        }
+    fn enable_ospi(config: Config) {
+        T::REGS.cr().modify(|w| {
+            w.set_en(true);
+        });
 
         // Free running clock needs to be set after peripheral enable
         if config.free_running_clock {
@@ -613,6 +583,91 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 w.set_frck(config.free_running_clock);
             });
         }
+    }
+
+    fn new_inner(
+        peri: Peri<'d, T>,
+        d0: Option<Flex<'d>>,
+        d1: Option<Flex<'d>>,
+        d2: Option<Flex<'d>>,
+        d3: Option<Flex<'d>>,
+        d4: Option<Flex<'d>>,
+        d5: Option<Flex<'d>>,
+        d6: Option<Flex<'d>>,
+        d7: Option<Flex<'d>>,
+        sck: Option<Flex<'d>>,
+        nss: Option<Flex<'d>>,
+        dqs: Option<Flex<'d>>,
+        dma: Option<ChannelAndRequest<'d>>,
+        config: Config,
+        width: OspiWidth,
+        dual_quad: bool,
+        #[cfg(octospim_v1)] iol_pgroup: u8,
+        #[cfg(octospim_v1)] ioh_pgroup: Option<u8>,
+        #[cfg(octospim_v1)] ctrl_pgroup: u8,
+    ) -> Self {
+        #[cfg(octospim_v1)]
+        trace!("OCTOSPI_IDX: {:?}", T::OCTOSPI_IDX);
+
+        #[cfg(octospim_v1)]
+        let (octospi1_was_enabled, octospi2_was_enabled) = {
+            trace!("IOL_PGROUP: 0b{:02b}", iol_pgroup);
+            if let Some(ioh_pgroup) = ioh_pgroup {
+                trace!("IOH_PGROUP: 0b{:02b}", ioh_pgroup);
+            } else {
+                trace!("IOH_PGROUP: N/A");
+            }
+            trace!("CLK/NCS/DQS CTRL_PGROUP: 0b{:02b}", ctrl_pgroup);
+
+            Self::enable_octospim_clock();
+
+            let previously_enabled_instances = Self::disable_octospis_for_octospim_config();
+            trace!(
+                "OCTOSPI1_ENABLED: {:?}, OCTOSPI2_ENABLED: {:?}",
+                previously_enabled_instances.0, previously_enabled_instances.1
+            );
+
+            // OctoSPI IO Manager has been enabled before
+            T::OCTOSPIM_REGS.cr().modify(|w| {
+                w.set_muxen(false);
+                w.set_req2ack_time(0xff);
+            });
+
+            Self::configure_octospim_control_group(ctrl_pgroup, dqs.is_some());
+            Self::configure_octospim_data_group(iol_pgroup, Self::octospim_low_data_src());
+
+            if dual_quad {
+                debug_assert!(
+                    ioh_pgroup.is_some(),
+                    "dual-quad must set ioh_pgroup for the second flash chip"
+                );
+            }
+
+            if let Some(ioh_pgroup) = ioh_pgroup {
+                Self::configure_octospim_data_group(ioh_pgroup, Self::octospim_high_data_src());
+            }
+
+            let cr = T::OCTOSPIM_REGS.cr().read();
+            let p1cr = T::OCTOSPIM_REGS.p1cr().read();
+            let p2cr = T::OCTOSPIM_REGS.p2cr().read();
+            debug!("OCTOSPIM_CR: 0x{:08X} - {:?}", cr.0, cr);
+            debug!("OCTOSPIM_P1CR: 0x{:08X} - {:?}", p1cr.0, p1cr);
+            debug!("OCTOSPIM_P2CR: 0x{:08X} - {:?}", p2cr.0, p2cr);
+
+            previously_enabled_instances
+        };
+
+        // System configuration
+        rcc::enable_and_reset::<T>();
+        while T::REGS.sr().read().busy() {}
+
+        Self::configure_ospi_registers(config, dual_quad);
+
+        #[cfg(octospim_v1)]
+        Self::restore_octospis_after_config(octospi1_was_enabled, octospi2_was_enabled);
+
+        // Enable peripheral
+        Self::enable_ospi(config);
 
         Self {
             _peri: peri,
@@ -1358,6 +1413,426 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             IOL_PGROUP,
             Some(IOH_PGROUP),
             CTRL_PGROUP,
+        )
+    }
+}
+
+impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
+    #[cfg(octospim_v1)]
+    fn new_multiplexed_inner<T2: Instance, M2: PeriMode>(
+        peri1: Peri<'d, T>,
+        peri2: Peri<'d, T2>,
+        sck: Option<Flex<'d>>,
+        d0: Option<Flex<'d>>,
+        d1: Option<Flex<'d>>,
+        d2: Option<Flex<'d>>,
+        d3: Option<Flex<'d>>,
+        d4: Option<Flex<'d>>,
+        d5: Option<Flex<'d>>,
+        d6: Option<Flex<'d>>,
+        d7: Option<Flex<'d>>,
+        nss1: Option<Flex<'d>>,
+        nss2: Option<Flex<'d>>,
+        dma1: Option<ChannelAndRequest<'d>>,
+        dma2: Option<ChannelAndRequest<'d>>,
+        config1: Config,
+        config2: Config,
+        mux_config: MultiplexConfig,
+        width1: OspiWidth,
+        width2: OspiWidth,
+        iol_pgroup: u8,
+        ioh_pgroup: Option<u8>,
+        clk_pgroup: u8,
+        ncs1_pgroup: u8,
+        ncs2_pgroup: u8,
+    ) -> (Self, Ospi<'d, T2, M2>) {
+        assert_ne!(
+            T::OCTOSPI_IDX,
+            T2::OCTOSPI_IDX,
+            "multiplexed OSPI instances must be different peripherals"
+        );
+        assert!(
+            Self::octospim_uses_p2(ncs1_pgroup) != Self::octospim_uses_p2(ncs2_pgroup),
+            "multiplexed OSPI chip selects must use different OCTOSPIM control groups"
+        );
+        assert!(
+            (!matches!(width1, OspiWidth::OCTO) && !matches!(width2, OspiWidth::OCTO)) || ioh_pgroup.is_some(),
+            "multiplexed octospi must set an IOH physical group"
+        );
+
+        Self::enable_octospim_clock();
+        rcc::enable_and_reset::<T>();
+        rcc::enable_and_reset::<T2>();
+        while T::REGS.sr().read().busy() {}
+        while T2::REGS.sr().read().busy() {}
+
+        Self::disable_octospis_for_octospim_config();
+
+        T::OCTOSPIM_REGS.cr().modify(|w| {
+            w.set_muxen(false);
+            w.set_req2ack_time(0xff);
+        });
+        T::OCTOSPIM_REGS.p1cr().write(|_| {});
+        T::OCTOSPIM_REGS.p2cr().write(|_| {});
+
+        Self::configure_octospim_clk_group(clk_pgroup, false, Self::octospim_signal_src());
+        Self::configure_octospim_data_group(iol_pgroup, Self::octospim_low_data_src());
+        if let Some(ioh_pgroup) = ioh_pgroup {
+            Self::configure_octospim_data_group(ioh_pgroup, Self::octospim_high_data_src());
+        }
+
+        // In multiplexed mode CLK/IO/DQS are arbitrated between OCTOSPIs, while
+        // NCS is not. The secondary port still has to enable the shared CLK/IO
+        // mapping, but those signals use the primary OSPI source. NCS is then
+        // sourced independently from the second OSPI.
+        Self::configure_octospim_clk_group(ncs2_pgroup, false, Self::octospim_signal_src());
+        Self::configure_octospim_data_group(ncs2_pgroup, Self::octospim_low_data_src());
+        if matches!(width2, OspiWidth::OCTO) {
+            Self::configure_octospim_data_group(ncs2_pgroup | 0b01, Self::octospim_high_data_src());
+        }
+        Self::configure_octospim_ncs_group(ncs1_pgroup, T::OCTOSPI_IDX == 2);
+        Self::configure_octospim_ncs_group(ncs2_pgroup, T2::OCTOSPI_IDX == 2);
+
+        T::OCTOSPIM_REGS.cr().modify(|w| {
+            w.set_req2ack_time(mux_config.req2ack_time);
+            w.set_muxen(true);
+        });
+
+        Self::configure_ospi_registers(config1, false);
+        Ospi::<T2, M2>::configure_ospi_registers(config2, false);
+
+        Self::enable_ospi(config1);
+        Ospi::<T2, M2>::enable_ospi(config2);
+
+        let ospi1 = Self {
+            _peri: peri1,
+            _sck: sck,
+            _d0: d0,
+            _d1: d1,
+            _d2: d2,
+            _d3: d3,
+            _d4: d4,
+            _d5: d5,
+            _d6: d6,
+            _d7: d7,
+            _nss: nss1,
+            _dqs: None,
+            dma: dma1,
+            _marker: PhantomData,
+            config: config1,
+            width: width1,
+        };
+
+        let ospi2 = Ospi {
+            _peri: peri2,
+            _sck: None,
+            _d0: None,
+            _d1: None,
+            _d2: None,
+            _d3: None,
+            _d4: None,
+            _d5: None,
+            _d6: None,
+            _d7: None,
+            _nss: nss2,
+            _dqs: None,
+            dma: dma2,
+            _marker: PhantomData,
+            config: config2,
+            width: width2,
+        };
+
+        (ospi1, ospi2)
+    }
+}
+
+#[cfg(octospim_v1)]
+/// Create a builder for two multiplexed OSPI instances.
+pub fn new_multiplexed<'d, T: Instance, T2: Instance>(
+    peri1: Peri<'d, T>,
+    peri2: Peri<'d, T2>,
+) -> MultiplexedOspiBuilder<'d, T, T2> {
+    MultiplexedOspiBuilder::new(peri1, peri2)
+}
+
+#[cfg(octospim_v1)]
+/// Builder for two multiplexed OSPI instances.
+pub struct MultiplexedOspiBuilder<'d, T: Instance, T2: Instance, M1: PeriMode = Blocking, M2: PeriMode = Blocking> {
+    peri1: Peri<'d, T>,
+    peri2: Peri<'d, T2>,
+    sck: Option<Flex<'d>>,
+    d0: Option<Flex<'d>>,
+    d1: Option<Flex<'d>>,
+    d2: Option<Flex<'d>>,
+    d3: Option<Flex<'d>>,
+    d4: Option<Flex<'d>>,
+    d5: Option<Flex<'d>>,
+    d6: Option<Flex<'d>>,
+    d7: Option<Flex<'d>>,
+    nss1: Option<Flex<'d>>,
+    nss2: Option<Flex<'d>>,
+    dma1: Option<ChannelAndRequest<'d>>,
+    dma2: Option<ChannelAndRequest<'d>>,
+    config1: Config,
+    config2: Config,
+    mux_config: MultiplexConfig,
+    width1: OspiWidth,
+    width2: OspiWidth,
+    widths_set: bool,
+    iol_pgroup: u8,
+    ioh_pgroup: Option<u8>,
+    clk_pgroup: u8,
+    ncs1_pgroup: u8,
+    ncs2_pgroup: u8,
+    _marker: PhantomData<(M1, M2)>,
+}
+
+#[cfg(octospim_v1)]
+impl<'d, T: Instance, T2: Instance> MultiplexedOspiBuilder<'d, T, T2> {
+    /// Create a new multiplexed OSPI builder.
+    pub fn new(peri1: Peri<'d, T>, peri2: Peri<'d, T2>) -> Self {
+        Self {
+            peri1,
+            peri2,
+            sck: None,
+            d0: None,
+            d1: None,
+            d2: None,
+            d3: None,
+            d4: None,
+            d5: None,
+            d6: None,
+            d7: None,
+            nss1: None,
+            nss2: None,
+            dma1: None,
+            dma2: None,
+            config1: Config::default(),
+            config2: Config::default(),
+            mux_config: MultiplexConfig { req2ack_time: 1 },
+            width1: OspiWidth::QUAD,
+            width2: OspiWidth::QUAD,
+            widths_set: false,
+            iol_pgroup: OCTOSPIM_P1_LOW,
+            ioh_pgroup: None,
+            clk_pgroup: OCTOSPIM_P1_CTRL,
+            ncs1_pgroup: OCTOSPIM_P1_CTRL,
+            ncs2_pgroup: OCTOSPIM_P2_CTRL,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[cfg(octospim_v1)]
+impl<'d, T: Instance, T2: Instance, M1: PeriMode, M2: PeriMode> MultiplexedOspiBuilder<'d, T, T2, M1, M2> {
+    fn remap<N1: PeriMode, N2: PeriMode>(
+        self,
+        dma1: Option<ChannelAndRequest<'d>>,
+        dma2: Option<ChannelAndRequest<'d>>,
+    ) -> MultiplexedOspiBuilder<'d, T, T2, N1, N2> {
+        MultiplexedOspiBuilder {
+            peri1: self.peri1,
+            peri2: self.peri2,
+            sck: self.sck,
+            d0: self.d0,
+            d1: self.d1,
+            d2: self.d2,
+            d3: self.d3,
+            d4: self.d4,
+            d5: self.d5,
+            d6: self.d6,
+            d7: self.d7,
+            nss1: self.nss1,
+            nss2: self.nss2,
+            dma1,
+            dma2,
+            config1: self.config1,
+            config2: self.config2,
+            mux_config: self.mux_config,
+            width1: self.width1,
+            width2: self.width2,
+            widths_set: self.widths_set,
+            iol_pgroup: self.iol_pgroup,
+            ioh_pgroup: self.ioh_pgroup,
+            clk_pgroup: self.clk_pgroup,
+            ncs1_pgroup: self.ncs1_pgroup,
+            ncs2_pgroup: self.ncs2_pgroup,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Set the first OSPI instance configuration.
+    pub fn config1(mut self, config: Config) -> Self {
+        self.config1 = config;
+        self
+    }
+
+    /// Set the second OSPI instance configuration.
+    pub fn config2(mut self, config: Config) -> Self {
+        self.config2 = config;
+        self
+    }
+
+    /// Set the OCTOSPIM multiplexing configuration.
+    pub fn mux_config(mut self, config: MultiplexConfig) -> Self {
+        self.mux_config = config;
+        self
+    }
+
+    /// Set the maximum logical width accepted by each returned OSPI handle.
+    pub fn widths(mut self, width1: OspiWidth, width2: OspiWidth) -> Self {
+        self.width1 = width1;
+        self.width2 = width2;
+        self.widths_set = true;
+        self
+    }
+
+    /// Configure a shared QuadSPI bus.
+    pub fn quad_bus<const IOL_PGROUP: u8, const CLK_PGROUP: u8, const NCS1_PGROUP: u8, const NCS2_PGROUP: u8>(
+        mut self,
+        sck: Peri<'d, impl SckSrc<T, CLK_PGROUP>>,
+        d0: Peri<'d, impl D0Src<T, IOL_PGROUP>>,
+        d1: Peri<'d, impl D1Src<T, IOL_PGROUP>>,
+        d2: Peri<'d, impl D2Src<T, IOL_PGROUP>>,
+        d3: Peri<'d, impl D3Src<T, IOL_PGROUP>>,
+        nss1: Peri<'d, impl NSSSrc<T, NCS1_PGROUP>>,
+        nss2: Peri<'d, impl NSSSrc<T2, NCS2_PGROUP>>,
+    ) -> Self {
+        self.sck = new_pin!(sck, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d0 = new_pin!(d0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d1 = new_pin!(d1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d2 = new_pin!(d2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d3 = new_pin!(d3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d4 = None;
+        self.d5 = None;
+        self.d6 = None;
+        self.d7 = None;
+        self.nss1 = new_pin!(
+            nss1,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        self.nss2 = new_pin!(
+            nss2,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        if !self.widths_set {
+            self.width1 = OspiWidth::QUAD;
+            self.width2 = OspiWidth::QUAD;
+        }
+        self.iol_pgroup = IOL_PGROUP;
+        self.ioh_pgroup = None;
+        self.clk_pgroup = CLK_PGROUP;
+        self.ncs1_pgroup = NCS1_PGROUP;
+        self.ncs2_pgroup = NCS2_PGROUP;
+        self
+    }
+
+    /// Configure a shared OctoSPI bus.
+    pub fn octo_bus<
+        const IOL_PGROUP: u8,
+        const IOH_PGROUP: u8,
+        const CLK_PGROUP: u8,
+        const NCS1_PGROUP: u8,
+        const NCS2_PGROUP: u8,
+    >(
+        mut self,
+        sck: Peri<'d, impl SckSrc<T, CLK_PGROUP>>,
+        d0: Peri<'d, impl D0Src<T, IOL_PGROUP>>,
+        d1: Peri<'d, impl D1Src<T, IOL_PGROUP>>,
+        d2: Peri<'d, impl D2Src<T, IOL_PGROUP>>,
+        d3: Peri<'d, impl D3Src<T, IOL_PGROUP>>,
+        d4: Peri<'d, impl D4Src<T, IOH_PGROUP>>,
+        d5: Peri<'d, impl D5Src<T, IOH_PGROUP>>,
+        d6: Peri<'d, impl D6Src<T, IOH_PGROUP>>,
+        d7: Peri<'d, impl D7Src<T, IOH_PGROUP>>,
+        nss1: Peri<'d, impl NSSSrc<T, NCS1_PGROUP>>,
+        nss2: Peri<'d, impl NSSSrc<T2, NCS2_PGROUP>>,
+    ) -> Self {
+        self.sck = new_pin!(sck, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d0 = new_pin!(d0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d1 = new_pin!(d1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d2 = new_pin!(d2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d3 = new_pin!(d3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d4 = new_pin!(d4, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d5 = new_pin!(d5, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d6 = new_pin!(d6, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.d7 = new_pin!(d7, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        self.nss1 = new_pin!(
+            nss1,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        self.nss2 = new_pin!(
+            nss2,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        if !self.widths_set {
+            self.width1 = OspiWidth::OCTO;
+            self.width2 = OspiWidth::OCTO;
+        }
+        self.iol_pgroup = IOL_PGROUP;
+        self.ioh_pgroup = Some(IOH_PGROUP);
+        self.clk_pgroup = CLK_PGROUP;
+        self.ncs1_pgroup = NCS1_PGROUP;
+        self.ncs2_pgroup = NCS2_PGROUP;
+        self
+    }
+
+    /// Make the first OSPI instance async.
+    pub fn peri1_async<D: OctoDma<T>>(
+        mut self,
+        dma: Peri<'d, D>,
+        irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+    ) -> MultiplexedOspiBuilder<'d, T, T2, Async, M2> {
+        let dma2 = self.dma2.take();
+        self.remap(new_dma!(dma, irq), dma2)
+    }
+
+    /// Make the second OSPI instance async.
+    pub fn peri2_async<D: OctoDma<T2>>(
+        mut self,
+        dma: Peri<'d, D>,
+        irq: impl crate::interrupt::typelevel::Binding<D::Interrupt, crate::dma::InterruptHandler<D>> + 'd,
+    ) -> MultiplexedOspiBuilder<'d, T, T2, M1, Async> {
+        let dma1 = self.dma1.take();
+        self.remap(dma1, new_dma!(dma, irq))
+    }
+
+    /// Build the two multiplexed OSPI instances.
+    pub fn build(self) -> (Ospi<'d, T, M1>, Ospi<'d, T2, M2>) {
+        assert!(self.sck.is_some(), "multiplexed OSPI requires an SCK pin");
+        assert!(self.d0.is_some(), "multiplexed OSPI requires IO0");
+        assert!(self.d1.is_some(), "multiplexed OSPI requires IO1");
+        assert!(self.d2.is_some(), "multiplexed OSPI requires IO2");
+        assert!(self.d3.is_some(), "multiplexed OSPI requires IO3");
+        assert!(self.nss1.is_some(), "multiplexed OSPI requires the first NCS pin");
+        assert!(self.nss2.is_some(), "multiplexed OSPI requires the second NCS pin");
+
+        Ospi::<T, M1>::new_multiplexed_inner::<T2, M2>(
+            self.peri1,
+            self.peri2,
+            self.sck,
+            self.d0,
+            self.d1,
+            self.d2,
+            self.d3,
+            self.d4,
+            self.d5,
+            self.d6,
+            self.d7,
+            self.nss1,
+            self.nss2,
+            self.dma1,
+            self.dma2,
+            self.config1,
+            self.config2,
+            self.mux_config,
+            self.width1,
+            self.width2,
+            self.iol_pgroup,
+            self.ioh_pgroup,
+            self.clk_pgroup,
+            self.ncs1_pgroup,
+            self.ncs2_pgroup,
         )
     }
 }

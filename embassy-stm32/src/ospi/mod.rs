@@ -157,6 +157,11 @@ pub struct MemoryMappedConfig {
     pub timeout: Option<u16>
 }
 
+/// OSPI multiplex configuration
+pub struct MultiplexConfig {
+    pub req2ack_time: u8
+}
+
 /// Error used for Octospi implementation
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -272,7 +277,14 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
         config: Config,
         width: OspiWidth,
         dual_quad: bool,
+        mux_config: Option<MultiplexConfig>
     ) -> Self {
+        // System configuration
+        rcc::enable_and_reset::<T>();
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.cr().modify(|w| w.set_en(false));
+
         #[cfg(octospim_v1)]
         {
             // RCC for octospim should be enabled before writing register
@@ -288,39 +300,37 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 w.set_en(false);
             });
 
-            // OctoSPI IO Manager has been enabled before
+            // Disable multiplexing while setting up OCTOSPIM.
             T::OCTOSPIM_REGS.cr().modify(|w| {
                 w.set_muxen(false);
                 w.set_req2ack_time(0xff);
             });
 
-            // Clear config
-            T::OCTOSPIM_REGS.p1cr().modify(|w| {
-                w.set_clksrc(false);
-                w.set_dqssrc(false);
-                w.set_ncssrc(false);
-                w.set_clken(false);
-                w.set_dqsen(false);
-                w.set_ncsen(false);
-                w.set_iolsrc(0);
-                w.set_iohsrc(0);
-            });
+            // Use PORT 2 for multiplexing.
+            if let Some(mux_config) = mux_config {
+                info!("Setup multiplexed OSPI {} channel", T::OCTOSPI_IDX);
+                // Clear config
+                T::OCTOSPIM_REGS.p2cr().write(|_| { });
 
-            T::OCTOSPIM_REGS.p1cr().modify(|w| {
-                let octospi_src = if T::OCTOSPI_IDX == 1 { false } else { true };
-                w.set_ncsen(true);
-                w.set_ncssrc(octospi_src);
-                w.set_clken(true);
-                w.set_clksrc(octospi_src);
-                if dqs.is_some() {
-                    w.set_dqsen(true);
-                    w.set_dqssrc(octospi_src);
-                }
+                T::OCTOSPIM_REGS.p2cr().modify(|w| {
+                    let octospi_src = if T::OCTOSPI_IDX == 1 { false } else { true };
 
-                // Set OCTOSPIM IOL and IOH according to the index of OCTOSPI instance
-                if T::OCTOSPI_IDX == 1 {
+                    // Use the NCS signal of the this OCTOSPI instance.
+                    w.set_ncsen(true);
+                    w.set_ncssrc(octospi_src);
+
+                    // Use every other signal from the OCTOSPI 1 instance.
+                    w.set_clken(true);
+                    w.set_clksrc(false);
+
+                    if dqs.is_some() {
+                        w.set_dqsen(true);
+                        w.set_dqssrc(false);
+                    }
+
                     w.set_iolen(true);
                     w.set_iolsrc(0);
+
                     // Enable IOH in octo and dual quad mode
                     if let OspiWidth::OCTO = width {
                         w.set_iohen(true);
@@ -332,32 +342,66 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                         w.set_iohen(false);
                         w.set_iohsrc(0b00);
                     }
-                } else {
-                    w.set_iolen(true);
-                    w.set_iolsrc(0b10);
-                    // Enable IOH in octo and dual quad mode
-                    if let OspiWidth::OCTO = width {
-                        w.set_iohen(true);
-                        w.set_iohsrc(0b11);
-                    } else if dual_quad {
-                        w.set_iohen(true);
-                        w.set_iohsrc(0b10);
-                    } else {
-                        w.set_iohen(false);
-                        w.set_iohsrc(0b00);
-                    }
-                }
-            });
+                });
 
-            T::OCTOSPIM_REGS.cr().modify(|w| {
-                w.set_req2ack_time(0x1);
-                w.set_muxen(true);
-            });
+                info!("Enable multiplexing...");
+                T::OCTOSPIM_REGS.cr().modify(|w| {
+                    w.set_req2ack_time(mux_config.req2ack_time);
+                    w.set_muxen(true);
+                });
+                info!("Multiplexing enabled.");
+            }
+            else {
+                info!("Setup OSPI {} channel", T::OCTOSPI_IDX);
+
+                // Clear config
+                T::OCTOSPIM_REGS.p1cr().write(|_| { });
+
+                T::OCTOSPIM_REGS.p1cr().modify(|w| {
+                    let octospi_src = if T::OCTOSPI_IDX == 1 { false } else { true };
+                    w.set_ncsen(true);
+                    w.set_ncssrc(octospi_src);
+                    w.set_clken(true);
+                    w.set_clksrc(octospi_src);
+                    if dqs.is_some() {
+                        w.set_dqsen(true);
+                        w.set_dqssrc(octospi_src);
+                    }
+
+                    // Set OCTOSPIM IOL and IOH according to the index of OCTOSPI instance
+                    if T::OCTOSPI_IDX == 1 {
+                        w.set_iolen(true);
+                        w.set_iolsrc(0);
+                        // Enable IOH in octo and dual quad mode
+                        if let OspiWidth::OCTO = width {
+                            w.set_iohen(true);
+                            w.set_iohsrc(0b01);
+                        } else if dual_quad {
+                            w.set_iohen(true);
+                            w.set_iohsrc(0b00);
+                        } else {
+                            w.set_iohen(false);
+                            w.set_iohsrc(0b00);
+                        }
+                    } else {
+                        w.set_iolen(true);
+                        w.set_iolsrc(0b10);
+                        // Enable IOH in octo and dual quad mode
+                        if let OspiWidth::OCTO = width {
+                            w.set_iohen(true);
+                            w.set_iohsrc(0b11);
+                        } else if dual_quad {
+                            w.set_iohen(true);
+                            w.set_iohsrc(0b10);
+                        } else {
+                            w.set_iohen(false);
+                            w.set_iohsrc(0b00);
+                        }
+                    }
+                });
+            }
         }
 
-        // System configuration
-        rcc::enable_and_reset::<T>();
-        while T::REGS.sr().read().busy() {}
 
         // Device configuration
         T::REGS.dcr1().modify(|w| {
@@ -810,6 +854,47 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
 
         Ok(())
     }
+
+    /// Create a new multiplexed instance.
+    pub fn multiplex<T2: Instance>(
+        &self,
+        peri: Peri<'d2, T2>,
+        nss: Peri<'d2, impl NSSPin<T2>>,
+        dma: Peri<'d2, impl OctoDma<T2>>,
+        config: Config,
+        mux_config: MultiplexConfig,
+    ) -> Ospi<'d2, T2, Async> {
+        // Disable this instance while configuring the other.
+        T::REGS.cr().modify(|w| w.set_en(false));
+
+        let other = Ospi::new_inner(
+            peri,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            new_pin!(
+                nss,
+                AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+            ),
+            None,
+            new_dma!(dma),
+            config,
+            self.width,
+            false,
+            Some(mux_config)
+        );
+
+        // Reenable this instance.
+        T::REGS.cr().modify(|w| w.set_en(true));
+
+        other
+    }
 }
 
 impl<'d, T: Instance> Ospi<'d, T, Blocking> {
@@ -842,6 +927,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             config,
             OspiWidth::SING,
             false,
+            None,
         )
     }
 
@@ -874,6 +960,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             config,
             OspiWidth::DUAL,
             false,
+            None,
         )
     }
 
@@ -908,6 +995,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             config,
             OspiWidth::QUAD,
             false,
+            None,
         )
     }
 
@@ -946,6 +1034,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             config,
             OspiWidth::QUAD,
             true,
+            None,
         )
     }
 
@@ -984,6 +1073,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             config,
             OspiWidth::OCTO,
             false,
+            None,
         )
     }
 }
@@ -1019,6 +1109,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             config,
             OspiWidth::SING,
             false,
+            None,
         )
     }
 
@@ -1052,6 +1143,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             config,
             OspiWidth::DUAL,
             false,
+            None,
         )
     }
 
@@ -1087,6 +1179,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             config,
             OspiWidth::QUAD,
             false,
+            None,
         )
     }
 
@@ -1126,6 +1219,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             config,
             OspiWidth::QUAD,
             true,
+            None,
         )
     }
 
@@ -1165,6 +1259,7 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             config,
             OspiWidth::OCTO,
             false,
+            None,
         )
     }
 
@@ -1385,18 +1480,6 @@ impl SealedOctospimInstance for peripherals::OCTOSPI2 {
     const OCTOSPI_IDX: u8 = 2;
 }
 
-#[cfg(octospim_v1)]
-foreach_peripheral!(
-    (octospi, $inst:ident) => {
-        impl SealedInstance for peripherals::$inst {
-            const REGS: Regs = crate::pac::$inst;
-        }
-
-        impl Instance for peripherals::$inst {}
-    };
-);
-
-#[cfg(not(octospim_v1))]
 foreach_peripheral!(
     (octospi, $inst:ident) => {
         impl SealedInstance for peripherals::$inst {

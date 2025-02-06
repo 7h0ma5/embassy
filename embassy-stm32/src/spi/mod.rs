@@ -148,6 +148,7 @@ pub struct Config {
     pub cs_pull: Pull,
     /// Enable hardware chip select (CS) / slave select (SS) output.
     pub cs_output_enabled: bool,
+    #[cfg(any(spi_v3, spi_v4, spi_v5))]
     /// Sets the chip select polarity if a hardware CS (SS) pin has been set.
     pub cs_polarity: CsPolarity,
     #[cfg(any(spi_v3, spi_v4, spi_v5))]
@@ -417,8 +418,13 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             w.set_cpol(cpol);
             w.set_br(br);
             w.set_lsbfirst(lsbfirst);
+        });
+
+        #[cfg(any(spi_v1, spi_f1, spi_v2))]
+        self.info.regs.cr2().modify(|w| {
             w.set_ssoe(ssoe);
         });
+
 
         #[cfg(any(spi_v3, spi_v4, spi_v5))]
         {
@@ -487,6 +493,9 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             Some(pin) => pin.pull(),
         };
 
+        #[cfg(any(spi_v1, spi_f1, spi_v2))]
+        let cs_output_enabled = self.info.regs.cr2().read().ssoe();
+        #[cfg(any(spi_v3, spi_v4, spi_v5))]
         let cs_output_enabled = cfg.ssoe();
 
         #[cfg(any(spi_v1, spi_f1, spi_v2))]
@@ -979,18 +988,22 @@ impl<'d> Spi<'d, Async> {
         Self::new_inner(peri, None, None, None, None, tx_dma, rx_dma, config)
     }
 
+    /// Returns the current TX DMA transfer options.
     pub fn tx_transfer_options(&mut self) -> TransferOptions {
         self.tx_transfer_options
     }
 
+    /// Set the TX DMA transfer options.
     pub fn set_tx_transfer_options(&mut self, options: TransferOptions) {
         self.tx_transfer_options = options;
     }
 
+    /// Returns the current RX DMA transfer options.
     pub fn rx_transfer_options(&mut self) -> TransferOptions {
         self.rx_transfer_options
     }
 
+    /// Set the RX DMA transfer options.
     pub fn set_rx_transfer_options(&mut self, options: TransferOptions) {
         self.rx_transfer_options = options;
     }

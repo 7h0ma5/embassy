@@ -72,14 +72,83 @@ pub struct TransferOptions {
     pub half_transfer_ir: bool,
     /// Enable transfer complete interrupt.
     pub complete_transfer_ir: bool,
+    /// Trigger source for the transfer. The number of the source is dependent
+    /// on the selected microcontroller and is listed its the reference manual.
+    pub trigger_source: u8,
+    /// The trigger mode for the transfer.
+    pub trigger_mode: TriggerMode,
+    /// The transfer is triggered on the selected edge polarity.
+    /// When the polarity is set to None, the trigger is disabled.
+    pub trigger_polarity: TriggerPolarity,
+    /// Amount of data to transfer in a single burst from the source.
+    pub src_burst_len: u8,
+    /// Amount of data to transfer in a single burst to the destination.
+    pub dst_burst_len: u8,
 }
 
 impl Default for TransferOptions {
     fn default() -> Self {
         Self {
-            priority: Priority::VeryHigh,
+            priority: Priority::Low,
             half_transfer_ir: false,
             complete_transfer_ir: true,
+            trigger_source: 0,
+            trigger_mode: TriggerMode::Block,
+            trigger_polarity: TriggerPolarity::None,
+            src_burst_len: 1,
+            dst_burst_len: 1,
+        }
+    }
+}
+
+/// Polarity of the transfer trigger.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TriggerPolarity {
+    /// No trigger (masked trigger event).
+    None,
+    /// Trigger on the rising edge.
+    RisingEdge,
+    /// Trigger on the falling edge.
+    FallingEdge,
+}
+
+impl From<TriggerPolarity> for vals::Trigpol {
+    fn from(value: TriggerPolarity) -> Self {
+        match value {
+            TriggerPolarity::None => Self::NONE,
+            TriggerPolarity::RisingEdge => Self::RISING_EDGE,
+            TriggerPolarity::FallingEdge => Self::FALLING_EDGE,
+        }
+    }
+}
+
+/// Trigger mode
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TriggerMode {
+    /// Trigger at block level: the first burst read of each
+    /// block transfer is conditioned by one hit trigger.
+    Block,
+    /// Same as block level trigger channel but at 2D/repeated block level.
+    /// The first burst read of a 2D/repeated block transfer is conditioned by one hit trigger.
+    Block2D,
+    /// At link level: a LLI link transfer is conditioned by one hit trigger. The LLI data transfer
+    /// (if any) is not conditioned.
+    LinkedListItem,
+    /// Trigger at programmed burst level: If SWREQ = 1, each programmed burst read is conditioned by
+    /// one hit trigger. If SWREQ = 0, each programmed burst that is requested by the selected
+    /// peripheral, is conditioned by one hit trigger.
+    Burst,
+}
+
+impl From<TriggerMode> for vals::Trigm {
+    fn from(value: TriggerMode) -> Self {
+        match value {
+            TriggerMode::Block => Self::BLOCK,
+            TriggerMode::Burst => Self::BURST,
+            TriggerMode::LinkedListItem => Self::LINKED_LIST_ITEM,
+            TriggerMode::Block2D => Self::_2DBLOCK,
         }
     }
 }
@@ -291,6 +360,10 @@ impl<'d> Channel<'d> {
                 Dir::MemoryToMemory => panic!("memory-to-memory transfers not implemented for GPDMA"),
             });
             w.set_reqsel(request);
+            w.set_trigm(options.trigger_mode.into());
+            w.set_trigsel(options.trigger_source);
+            w.set_trigsel(options.trigger_source);
+            w.set_trigpol(options.trigger_polarity.into());
         });
         ch.tr3().write(|_| {}); // no address offsets.
         ch.br1().write(|w| w.set_bndt(bndt));
@@ -528,6 +601,8 @@ impl<'d> Channel<'d> {
         options: TransferOptions,
     ) -> Transfer<'a> {
         assert!(count > 0 && count <= 0xFFFF);
+        assert!((1..=63).contains(&options.src_burst_len));
+        assert!((1..=63).contains(&options.dst_burst_len));
 
         self.configure(
             request,

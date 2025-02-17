@@ -315,7 +315,7 @@ pub struct TransferOptions {
 impl Default for TransferOptions {
     fn default() -> Self {
         Self {
-            priority: Priority::VeryHigh,
+            priority: Priority::Low,
             half_transfer_ir: false,
             complete_transfer_ir: true,
             #[cfg(stm32n6)]

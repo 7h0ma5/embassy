@@ -484,7 +484,6 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         write: &[u8],
         first_slice: bool,
         last_slice: bool,
-        send_stop: bool,
         timeout: Timeout,
     ) -> Result<(), Error> {
         let total_len = write.len();
@@ -577,12 +576,10 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         .await?;
 
         dma_transfer.await;
+
         if last_slice {
             // This should be done already
             self.wait_tc(timeout)?;
-        }
-
-        if last_slice & send_stop {
             self.master_stop();
         }
 
@@ -654,17 +651,16 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
                     self.info,
                     address,
                     total_len.min(255),
-                    Stop::Automatic,
+                    Stop::Software,
                     total_len > 255,
                     restart,
                     timeout,
                 )?;
-                if total_len <= 255 {
-                    return Poll::Ready(Ok(()));
-                }
-            } else if isr.tcr() {
+            } else if !(isr.tcr() || isr.tc()) {
                 // poll_fn was woken without an interrupt present
                 return Poll::Pending;
+            } else if remaining_len == 0 {
+                return Poll::Ready(Ok(()));
             } else {
                 let last_piece = remaining_len <= 255;
 
@@ -685,6 +681,11 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         .await?;
 
         dma_transfer.await;
+
+        // This should be done already
+        self.wait_tc(timeout)?;
+        self.master_stop();
+
         drop(on_drop);
 
         Ok(())
@@ -721,7 +722,7 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
             let next = iter.next();
             let is_last = next.is_none();
 
-            let fut = self.write_dma_internal(address, c, first, is_last, is_last, timeout);
+            let fut = self.write_dma_internal(address, c, first, is_last, timeout);
             timeout.with(fut).await?;
             first = false;
             current = next;

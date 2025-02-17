@@ -26,11 +26,110 @@ pub(crate) struct ChannelInfo {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
-pub struct TransferOptions {}
+pub struct TransferOptions {
+    /// Priority of the transfer.
+    pub priority: TransferPriority,
+    /// Trigger source for the transfer. The number of the source is dependent
+    /// on the selected microcontroller and is listed its the reference manual.
+    pub trigger_source: Option<u8>,
+    /// The trigger mode for the transfer.
+    pub trigger_mode: TriggerMode,
+    /// The transfer is triggered on the selected edge polarity.
+    /// When the polarity is set to None, the trigger is disabled.
+    pub trigger_polarity: TriggerPolarity,
+    /// Amount of data to transfer in a single burst from the source.
+    pub src_burst_len: u8,
+    /// Amount of data to transfer in a single burst to the destination.
+    pub dst_burst_len: u8,
+}
 
 impl Default for TransferOptions {
     fn default() -> Self {
-        Self {}
+        Self {
+            priority: TransferPriority::LowWithLowWeight,
+            trigger_source: None,
+            trigger_mode: TriggerMode::Block,
+            trigger_polarity: TriggerPolarity::None,
+            src_burst_len: 1,
+            dst_burst_len: 1,
+        }
+    }
+}
+
+/// Defines the priority of a DMA transfer.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TransferPriority {
+    /// Low priority with low weight.
+    LowWithLowWeight,
+    /// Low priority with medium weight.
+    LowWithMidWeight,
+    /// Low priority with high weight.
+    LowWithHighWeigt,
+    /// High priority. 
+    High,
+}
+
+impl From<TransferPriority> for vals::Prio {
+    fn from(value: TransferPriority) -> Self {
+        match value {
+            TransferPriority::LowWithLowWeight => Self::LOWWITHMIDWEIGHT,
+            TransferPriority::LowWithMidWeight => Self::LOWWITHMIDWEIGHT,
+            TransferPriority::LowWithHighWeigt => Self::LOWWITHHIGHWEIGHT,
+            TransferPriority::High => Self::HIGH,
+        }
+    }
+}
+
+/// Polarity of the transfer trigger.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TriggerPolarity {
+    /// No trigger (masked trigger event).
+    None,
+    /// Trigger on the rising edge.
+    RisingEdge,
+    /// Trigger on the falling edge.
+    FallingEdge,
+}
+
+impl From<TriggerPolarity> for vals::Trigpol {
+    fn from(value: TriggerPolarity) -> Self {
+        match value {
+            TriggerPolarity::None => Self::NONE,
+            TriggerPolarity::RisingEdge => Self::RISINGEDGE,
+            TriggerPolarity::FallingEdge => Self::FALLINGEDGE,
+        }
+    }
+}
+
+/// Trigger mode
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TriggerMode {
+    /// Trigger at block level: the first burst read of each
+    /// block transfer is conditioned by one hit trigger.
+    Block,
+    /// Same as block level trigger channel but at 2D/repeated block level.
+    /// The first burst read of a 2D/repeated block transfer is conditioned by one hit trigger.
+    Block2D,
+    /// At link level: a LLI link transfer is conditioned by one hit trigger. The LLI data transfer
+    /// (if any) is not conditioned.
+    LinkedListItem,
+    /// Trigger at programmed burst level: If SWREQ = 1, each programmed burst read is conditioned by
+    /// one hit trigger. If SWREQ = 0, each programmed burst that is requested by the selected
+    /// peripheral, is conditioned by one hit trigger.
+    Burst,
+}
+
+impl From<TriggerMode> for vals::Trigm {
+    fn from(value: TriggerMode) -> Self {
+        match value {
+            TriggerMode::Block => Self::BLOCK,
+            TriggerMode::Burst => Self::BURST,
+            TriggerMode::LinkedListItem => Self::LINKEDLISTITEM,
+            TriggerMode::Block2D => Self::_2DBLOCK,
+        }
     }
 }
 
@@ -212,11 +311,15 @@ impl<'a> Transfer<'a> {
         incr_mem: bool,
         data_size: WordSize,
         dst_size: WordSize,
-        _options: TransferOptions,
+        options: TransferOptions,
     ) -> Self {
         // BNDT is specified as bytes, not as number of transfers.
         let Ok(bndt) = (mem_len * data_size.bytes()).try_into() else {
             panic!("DMA transfers may not be larger than 65535 bytes.");
+        };
+
+        if !(1..=63).contains(&options.src_burst_len) || !(1..=63).contains(&options.dst_burst_len) {
+            panic!("DMA transfer burst length must lie between 1 and 63.");
         };
 
         let info = channel.info();
@@ -235,6 +338,8 @@ impl<'a> Transfer<'a> {
             w.set_ddw(dst_size.into());
             w.set_sinc(dir == Dir::MemoryToPeripheral && incr_mem);
             w.set_dinc(dir == Dir::PeripheralToMemory && incr_mem);
+            w.set_sbl_1(options.src_burst_len - 1);
+            w.set_dbl_1(options.dst_burst_len - 1);
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {
@@ -242,6 +347,9 @@ impl<'a> Transfer<'a> {
                 Dir::PeripheralToMemory => vals::Dreq::SOURCE_PERIPHERAL,
             });
             w.set_reqsel(request);
+            w.set_trigm(options.trigger_mode.into());
+            w.set_trigsel(options.trigger_source.unwrap_or(0));
+            w.set_trigpol(options.trigger_polarity.into());
         });
         ch.tr3().write(|_| {}); // no address offsets.
         ch.br1().write(|w| w.set_bndt(bndt));
@@ -258,6 +366,9 @@ impl<'a> Transfer<'a> {
         }
 
         ch.cr().write(|w| {
+            // Set the priority
+            w.set_prio(options.priority.into());
+
             // Enable interrupts
             w.set_tcie(true);
             w.set_useie(true);

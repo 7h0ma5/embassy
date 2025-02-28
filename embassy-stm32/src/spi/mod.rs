@@ -1215,14 +1215,6 @@ impl<'d> Spi<'d, Async> {
                 .read_raw(rx_src, read, self.rx_transfer_options)
         };
 
-        let tx_dst: *mut W = self.info.regs.tx_ptr();
-        let tx_f = unsafe {
-            self.tx_dma
-                .as_mut()
-                .unwrap()
-                .write_raw(write, tx_dst, self.tx_transfer_options)
-        };
-
         set_txdmaen(self.info.regs, true);
         self.info.regs.cr1().modify(|w| {
             w.set_spe(true);
@@ -1231,6 +1223,14 @@ impl<'d> Spi<'d, Async> {
         self.info.regs.cr1().modify(|w| {
             w.set_cstart(true);
         });
+
+        let tx_dst: *mut W = self.info.regs.tx_ptr();
+        let tx_f = unsafe {
+            self.tx_dma
+                .as_mut()
+                .unwrap()
+                .write_raw(write, tx_dst, self.tx_transfer_options)
+        };
 
         join(tx_f, rx_f).await;
 

@@ -1199,18 +1199,7 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
         let rx_src = self.info.regs.rx_ptr::<W>();
         let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, Default::default()) };
 
-        let tx_dst: *mut W = self.info.regs.tx_ptr();
-        let tx_f = unsafe {
-            self.tx_dma
-                .as_mut()
-                .unwrap()
-                .write_raw(write, tx_dst, Default::default())
-        };
-
         set_txdmaen(self.info.regs, true);
-
-        // Memory barrier after DMA setup to ensure register writes complete before command
-        fence(Ordering::SeqCst);
 
         self.info.regs.cr1().modify(|w| {
             w.set_spe(true);
@@ -1219,6 +1208,17 @@ impl<'d, CM: CommunicationMode> Spi<'d, Async, CM> {
         self.info.regs.cr1().modify(|w| {
             w.set_cstart(true);
         });
+
+        let tx_dst: *mut W = self.info.regs.tx_ptr();
+        let tx_f = unsafe {
+            self.tx_dma
+                .as_mut()
+                .unwrap()
+                .write_raw(write, tx_dst, Default::default())
+        };
+
+        // Memory barrier after DMA setup to ensure register writes complete before command
+        fence(Ordering::SeqCst);
 
         join(tx_f, rx_f).await;
 

@@ -16,11 +16,11 @@ use crate::interrupt::Priority;
 use crate::pac;
 use crate::pac::gpdma::vals;
 
-pub(crate) struct ChannelInfo {
-    pub(crate) dma: pac::gpdma::Gpdma,
-    pub(crate) num: usize,
+pub struct ChannelInfo {
+    pub dma: pac::gpdma::Gpdma,
+    pub num: usize,
     #[cfg(feature = "_dual-core")]
-    pub(crate) irq: pac::Interrupt,
+    pub irq: pac::Interrupt,
 }
 
 /// GPDMA transfer options.

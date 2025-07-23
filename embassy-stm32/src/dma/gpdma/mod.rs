@@ -18,11 +18,11 @@ use crate::pac::gpdma::vals;
 pub mod linked_list;
 pub mod ringbuffered;
 
-pub(crate) struct ChannelInfo {
-    pub(crate) dma: pac::gpdma::Gpdma,
-    pub(crate) num: usize,
+pub struct ChannelInfo {
+    pub dma: pac::gpdma::Gpdma,
+    pub num: usize,
     #[cfg(feature = "_dual-core")]
-    pub(crate) irq: pac::Interrupt,
+    pub irq: pac::Interrupt,
 }
 
 /// DMA request priority

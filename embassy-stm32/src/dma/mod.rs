@@ -85,7 +85,7 @@ pub struct AnyChannel {
 impl_peripheral!(AnyChannel);
 
 impl AnyChannel {
-    fn info(&self) -> &ChannelInfo {
+    pub fn info(&self) -> &ChannelInfo {
         &crate::_generated::DMA_CHANNELS[self.id as usize]
     }
 }

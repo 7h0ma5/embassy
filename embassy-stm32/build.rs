@@ -1847,6 +1847,11 @@ fn main() {
                     let ch_name = format!("{}_{}", p.name, irq.signal);
                     let ch = METADATA.dma_channels.iter().find(|c| c.name == ch_name).unwrap();
 
+                    // HACK: disable irq generation for this channel
+                    if ch_name == "GPDMA1_CH9" {
+                        continue;
+                    }
+
                     // Some H7 chips have BDMA1 hardcoded for DFSDM, ie no DMAMUX. It's unsupported, skip it.
                     if has_dmamux && ch.dmamux.is_none() {
                         continue;

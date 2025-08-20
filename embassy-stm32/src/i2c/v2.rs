@@ -73,13 +73,17 @@ pub(crate) unsafe fn on_interrupt<T: Instance>() {
 
 impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
     pub(crate) fn init(&mut self, config: Config) {
+        let timings = Timings::new(self.kernel_clock, config.frequency.into());
+
+        assert!(config.digital_noise_filter <= 0x0F);
+        assert!(timings.scll > config.digital_noise_filter + 4);
+        assert!(timings.sclh > 1);
+
         self.info.regs.cr1().modify(|reg| {
             reg.set_pe(false);
             reg.set_anfoff(config.disable_analog_noise_filter);
             reg.set_dnf(i2c::vals::Dnf::from(config.digital_noise_filter));
         });
-
-        let timings = Timings::new(self.kernel_clock, config.frequency.into());
 
         self.info.regs.timingr().write(|reg| {
             reg.set_presc(timings.prescale);

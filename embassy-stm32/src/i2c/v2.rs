@@ -49,23 +49,31 @@ pub(crate) unsafe fn on_interrupt<T: Instance>() {
     crate::low_power::Executor::on_wakeup_irq_or_event();
 
     let regs = T::info().regs;
-    let isr = regs.isr().read();
 
-    if isr.tcr() || isr.tc() || isr.addr() || isr.stopf() || isr.nackf() || isr.berr() || isr.arlo() || isr.ovr() {
+    let wake = critical_section::with(|_| {
+        let isr = regs.isr().read();
+
+        if isr.tcr() || isr.tc() || isr.addr() || isr.stopf() || isr.nackf() || isr.berr() || isr.arlo() || isr.ovr() {
+            regs.cr1().modify(|w| {
+                w.set_addrie(false);
+                w.set_stopie(false);
+                // The flag can only be cleared by writting to nbytes, we won't do that here
+                w.set_tcie(false);
+                // Error flags are to be read in the routines, so we also don't clear them here
+                w.set_nackie(false);
+                w.set_errie(false);
+            });
+
+            true
+        }
+        else {
+            false
+        }
+    });
+
+    if wake {
         T::state().waker.wake();
     }
-
-    critical_section::with(|_| {
-        regs.cr1().modify(|w| {
-            w.set_addrie(false);
-            w.set_stopie(false);
-            // The flag can only be cleared by writting to nbytes, we won't do that here
-            w.set_tcie(false);
-            // Error flags are to be read in the routines, so we also don't clear them here
-            w.set_nackie(false);
-            w.set_errie(false);
-        });
-    });
 }
 
 impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
@@ -168,14 +176,36 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
             // automatically. This could be up to 50% of a bus
             // cycle (ie. up to 0.5/freq)
             while info.regs.cr2().read().start() {
-                timeout.check()?;
+                if let result @ Err(_err) = timeout.check() {
+                    warn!("I2C bus stuck in START state, resetting peripheral.");
+
+                    // Reset the peripheral
+                    critical_section::with(|_| {
+                        info.regs.cr1().modify(|w| w.set_pe(false));
+                        while info.regs.cr1().read().pe() {}
+                        info.regs.cr1().modify(|w| w.set_pe(true));
+                    });
+
+                    return result;
+                }
             }
 
-            // Wait for the bus to be free
-            while info.regs.isr().read().busy() {
-                timeout.check()?;
-            }
-        }
+             // Wait for the bus to be free.
+             while info.regs.isr().read().busy() {
+                if let result @ Err(_err) = timeout.check() {
+                    warn!("I2C bus stuck in BUSY state, resetting peripheral.");
+
+                    // Reset the peripheral
+                    critical_section::with(|_| {
+                        info.regs.cr1().modify(|w| w.set_pe(false));
+                        while info.regs.cr1().read().pe() {}
+                        info.regs.cr1().modify(|w| w.set_pe(true));
+                    });
+
+                    return result;
+                }
+             }
+         }
 
         // Set START and prepare to send `bytes`. The
         // START bit can be set even if the bus is BUSY or

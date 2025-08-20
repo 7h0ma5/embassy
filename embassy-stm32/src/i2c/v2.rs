@@ -155,21 +155,36 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
     ) -> Result<(), Error> {
         assert!(length < 256);
 
-        // Reset the I2C peripheral if it is stuck.
-        if info.regs.cr2().read().start() {
-            warn!("I2C stuck (START)!");
+        // Wait for the start condition to be cleared.
+        while info.regs.cr2().read().start() {
+            if let result @ Err(_err) = timeout.check() {
+                warn!("I2C bus stuck in START state, resetting peripheral.");
 
-            // Reset the peripheral
-            info.regs.cr1().modify(|w| w.set_pe(false));
-            // Wait 3 AHB cycles for the reset to complete
-            embassy_time::block_for(embassy_time::Duration::from_micros(5));
-            // Reenable the peripheral
-            info.regs.cr1().modify(|w| w.set_pe(true));
+                // Reset the peripheral
+                critical_section::with(|_| {
+                    info.regs.cr1().modify(|w| w.set_pe(false));
+                    while info.regs.cr1().read().pe() {}
+                    info.regs.cr1().modify(|w| w.set_pe(true));
+                });
+
+                return result;
+            }
         }
 
         // Wait for the bus to be free.
         while info.regs.isr().read().busy() {
-            timeout.check()?;
+            if let result @ Err(_err) = timeout.check() {
+                warn!("I2C bus stuck in BUSY state, resetting peripheral.");
+
+                // Reset the peripheral
+                critical_section::with(|_| {
+                    info.regs.cr1().modify(|w| w.set_pe(false));
+                    while info.regs.cr1().read().pe() {}
+                    info.regs.cr1().modify(|w| w.set_pe(true));
+                });
+
+                return result;
+            }
         }
 
         let reload = if reload {

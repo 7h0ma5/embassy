@@ -129,6 +129,13 @@ pub struct Config {
     /// Timeout.
     #[cfg(feature = "time")]
     pub timeout: embassy_time::Duration,
+    /// Disables the analog noise filter.
+    #[cfg(any(i2c_v2, i2c_v3))]
+    pub disable_analog_noise_filter: bool,
+    /// The length of noise spikes to digitally filter in number of clock cycles
+    /// of the I2C core clock.
+    #[cfg(any(i2c_v2, i2c_v3))]
+    pub digital_noise_filter: u8,
 }
 
 impl Default for Config {
@@ -142,6 +149,10 @@ impl Default for Config {
             scl_pullup: false,
             #[cfg(feature = "time")]
             timeout: embassy_time::Duration::from_millis(1000),
+            #[cfg(any(i2c_v2, i2c_v3))]
+            disable_analog_noise_filter: false,
+            #[cfg(any(i2c_v2, i2c_v3))]
+            digital_noise_filter: 0,
         }
     }
 }

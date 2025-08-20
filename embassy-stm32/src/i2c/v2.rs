@@ -42,40 +42,11 @@ enum ReceiveResult {
     NewStart,
 }
 
-fn debug_print_interrupts(isr: stm32_metapac::i2c::regs::Isr) {
-    if isr.tcr() {
-        trace!("interrupt: tcr");
-    }
-    if isr.tc() {
-        trace!("interrupt: tc");
-    }
-    if isr.addr() {
-        trace!("interrupt: addr");
-    }
-    if isr.stopf() {
-        trace!("interrupt: stopf");
-    }
-    if isr.nackf() {
-        trace!("interrupt: nackf");
-    }
-    if isr.berr() {
-        trace!("interrupt: berr");
-    }
-    if isr.arlo() {
-        trace!("interrupt: arlo");
-    }
-    if isr.ovr() {
-        trace!("interrupt: ovr");
-    }
-}
-
 pub(crate) unsafe fn on_interrupt<T: Instance>() {
     let regs = T::info().regs;
     let isr = regs.isr().read();
 
     if isr.tcr() || isr.tc() || isr.addr() || isr.stopf() || isr.nackf() || isr.berr() || isr.arlo() || isr.ovr() {
-        debug_print_interrupts(isr);
-
         T::state().waker.wake();
     }
 

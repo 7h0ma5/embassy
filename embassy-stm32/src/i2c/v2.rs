@@ -75,7 +75,8 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
     pub(crate) fn init(&mut self, config: Config) {
         self.info.regs.cr1().modify(|reg| {
             reg.set_pe(false);
-            reg.set_anfoff(false);
+            reg.set_anfoff(config.disable_analog_noise_filter);
+            reg.set_dnf(i2c::vals::Dnf::from(config.digital_noise_filter));
         });
 
         let timings = Timings::new(self.kernel_clock, config.frequency.into());

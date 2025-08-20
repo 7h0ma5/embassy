@@ -1,0 +1,23 @@
+[[language]]
+name = "rust"
+
+[language-server.rust-analyzer.config.cargo]
+target = "thumbv8m.main-none-eabihf"
+allTargets = false
+features = ["stm32u575vg"]
+
+[language-server.rust-analyzer.config.check]
+command = "clippy"
+workspace = false
+features = ["stm32u575vg"]
+allTargets = false
+target = "thumbv8m.main-none-eabihf"
+args = [
+  "--lib",
+  "-p",
+  "embassy-stm32",
+  "--target",
+  "thumbv8m.main-none-eabihf",
+  "--allow",
+  "dead_code",
+]

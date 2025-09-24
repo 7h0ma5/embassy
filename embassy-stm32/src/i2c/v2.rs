@@ -65,8 +65,7 @@ pub(crate) unsafe fn on_interrupt<T: Instance>() {
             });
 
             true
-        }
-        else {
+        } else {
             false
         }
     });
@@ -182,7 +181,7 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
             // cycle (ie. up to 0.5/freq)
             while info.regs.cr2().read().start() {
                 if let result @ Err(_err) = timeout.check() {
-                    warn!("I2C bus stuck in START state, resetting peripheral.");
+                    warn!("I2C bus stuck in START state, resetting the peripheral.");
 
                     // Reset the peripheral
                     critical_section::with(|_| {
@@ -198,7 +197,7 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
              // Wait for the bus to be free.
              while info.regs.isr().read().busy() {
                 if let result @ Err(_err) = timeout.check() {
-                    warn!("I2C bus stuck in BUSY state, resetting peripheral.");
+                    warn!("I2C bus stuck in BUSY state, resetting the peripheral.");
 
                     // Reset the peripheral
                     critical_section::with(|_| {
@@ -1188,8 +1187,18 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         if write.is_empty() {
             self.write_internal(address.into(), write, false, timeout)?;
         } else {
+            // What happens here if the write function returns with an error or gets canceled?
+            // We have to send the stop condition to the slave!
+            let on_drop = OnDrop::new(|| {
+                let regs = self.info.regs;
+                regs.cr2().write(|w| w.set_stop(true));
+                warn!("write_read::on_drop::sending_stop");
+            });
+
             let fut = self.write_dma_internal(address.into(), write, true, true, false, false, timeout);
             timeout.with(fut).await?;
+
+            on_drop.defuse();
         }
 
         if read.is_empty() {

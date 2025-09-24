@@ -1182,8 +1182,18 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         if write.is_empty() {
             self.write_internal(address.into(), write, false, timeout)?;
         } else {
+            // What happens here if the write function returns with an error or gets canceled?
+            // We have to send the stop condition to the slave!
+            let on_drop = OnDrop::new(|| {
+                let regs = self.info.regs;
+                regs.cr2().write(|w| w.set_stop(true));
+                warn!("write_read::on_drop::sending_stop");
+            });
+
             let fut = self.write_dma_internal(address.into(), write, true, true, false, false, timeout);
             timeout.with(fut).await?;
+
+            on_drop.defuse();
         }
 
         if read.is_empty() {

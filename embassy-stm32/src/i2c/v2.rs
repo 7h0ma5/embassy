@@ -638,7 +638,10 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         send_stop: bool,
         timeout: Timeout,
     ) -> Result<(), Error> {
-        debug!("write_dma_internal");
+        debug!(
+            "write_dma_internal. first_slice: {:?}, last_slice: {:?}, send_stop: {:?}",
+            first_slice, last_slice, send_stop
+        );
         let total_len = write.len();
 
         let dma_transfer = unsafe {
@@ -686,6 +689,8 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
             debug!("write_dma_internal::poll_fn");
 
             self.state.waker.register(cx.waker());
+
+            debug!("write_dma_internal::poll_fn");
 
             let isr = self.info.regs.isr().read();
 
@@ -735,17 +740,21 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
             }
 
             remaining_len = remaining_len.saturating_sub(255);
+
             Poll::Pending
         })
         .await?;
 
         dma_transfer.await;
         if last_slice {
+            debug!("wirte_dma_internal::wait_tc");
+
             // This should be done already
             self.wait_tc(timeout)?;
         }
 
         if last_slice & send_stop {
+            debug!("wirte_dma_internal::master_stop");
             self.master_stop();
         }
 
@@ -762,7 +771,7 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         restart: bool,
         timeout: Timeout,
     ) -> Result<(), Error> {
-        debug!("read_dma_internal");
+        debug!("read_dma_internal. restart: {:?}", restart);
         let total_len = buffer.len();
 
         let dma_transfer = unsafe {
@@ -781,6 +790,11 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         };
 
         let mut remaining_len = total_len;
+
+        debug!(
+            "read_dma_internal: remaining len: {:?} total_len: {:?}",
+            remaining_len, total_len
+        );
 
         let on_drop = OnDrop::new(|| {
             debug!("read_dma_internal::on_drop");

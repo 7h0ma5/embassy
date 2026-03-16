@@ -107,6 +107,9 @@ pub(crate) trait SealedChannelInstance {
 pub trait ChannelInstance: SealedChannelInstance + PeripheralType + 'static {
     /// The interrupt type for this DMA channel.
     type Interrupt: interrupt::typelevel::Interrupt;
+
+    /// Channel number.
+    fn info() -> &'static ChannelInfo;
 }
 
 /// DMA interrupt handler.
@@ -129,6 +132,10 @@ macro_rules! dma_channel_impl {
 
         impl crate::dma::ChannelInstance for crate::peripherals::$channel_peri {
             type Interrupt = $irq;
+
+            fn info() -> &'static crate::dma::ChannelInfo {
+                crate::dma::info($index)
+            }
         }
     };
 }

@@ -277,32 +277,23 @@ impl AdcRegs for crate::pac::adc::Adc4 {
         #[cfg(stm32u5)]
         self.chselrmod0().write_value(Chselr(0_u32));
 
-        #[cfg(stm32wba)]
         let mut first_sample_time: Option<SampleTime> = None;
 
         for (_i, ((channel, _), sample_time)) in sequence.enumerate() {
-            // For STM32WBA: SMPR only has 2 sample time slots (SMP1, SMP2).
+            // SMPR only has 2 sample time slots (SMP1, SMP2).
             // We use SMP1 for all channels with the first channel's sample time.
-            // For STM32U5: Each channel can have its own sample time.
-            #[cfg(stm32u5)]
-            self.smpr().modify(|w| {
-                w.set_smp(_i, sample_time);
-            });
 
-            #[cfg(stm32wba)]
-            {
-                // Set SMP1 (index 0) with the first channel's sample time, use it for all channels
-                if first_sample_time.is_none() {
-                    first_sample_time = Some(sample_time);
-                    self.smpr().modify(|w| {
-                        w.set_smp(0, sample_time); // Index 0 = SMP1
-                    });
-                }
-                // Set SMPSEL for this channel to use SMP1
+            // Set SMP1 (index 0) with the first channel's sample time, use it for all channels.
+            if first_sample_time.is_none() {
+                first_sample_time = Some(sample_time);
                 self.smpr().modify(|w| {
-                    w.set_smpsel(channel as usize, Smpsel::SMP1);
+                    w.set_smp(0, sample_time); // Index 0 = SMP1
                 });
             }
+            // Set SMPSEL for this channel to use SMP1
+            self.smpr().modify(|w| {
+                w.set_smpsel(channel as usize, false);
+            });
 
             let channel_num = channel;
             if channel_num as i16 <= prev_channel {

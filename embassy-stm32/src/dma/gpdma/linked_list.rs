@@ -22,7 +22,7 @@ pub enum RunMode {
 ///
 /// Also works for 2D-capable GPDMA channels, but does not use 2D capabilities.
 #[derive(Debug, Copy, Clone, Default)]
-#[repr(C)]
+#[repr(C, align(4))]
 pub struct LinearItem {
     /// Transfer register 1.
     pub tr1: regs::ChTr1,
@@ -151,7 +151,7 @@ impl LinearItem {
 }
 
 /// A table of linked list items.
-#[repr(C)]
+#[repr(C, align(4))]
 pub struct Table<const ITEM_COUNT: usize> {
     /// The items.
     pub items: [LinearItem; ITEM_COUNT],

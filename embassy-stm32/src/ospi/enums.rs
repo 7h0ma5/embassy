@@ -2,7 +2,7 @@
 
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
-pub(crate) enum OspiMode {
+pub enum OspiMode {
     IndirectWrite,
     IndirectRead,
     AutoPolling,
@@ -389,6 +389,24 @@ impl Into<u8> for DummyCycles {
             DummyCycles::_29 => 29,
             DummyCycles::_30 => 30,
             DummyCycles::_31 => 31,
+        }
+    }
+}
+
+/// Autopoll match mode
+#[derive(Copy, Clone)]
+pub enum AutopollMatchMode {
+    /// AND match mode between unmasked bits.
+    And,
+    /// OR match mode between unmasked bits.
+    Or,
+}
+
+impl From<AutopollMatchMode> for crate::pac::octospi::vals::MatchMode {
+    fn from(value: AutopollMatchMode) -> Self {
+        match value {
+            AutopollMatchMode::And => Self::MatchAnd,
+            AutopollMatchMode::Or => Self::MatchOr,
         }
     }
 }

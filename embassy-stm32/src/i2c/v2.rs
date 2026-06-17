@@ -42,40 +42,11 @@ enum ReceiveResult {
     NewStart,
 }
 
-fn debug_print_interrupts(isr: stm32_metapac::i2c::regs::Isr) {
-    if isr.tcr() {
-        trace!("interrupt: tcr");
-    }
-    if isr.tc() {
-        trace!("interrupt: tc");
-    }
-    if isr.addr() {
-        trace!("interrupt: addr");
-    }
-    if isr.stopf() {
-        trace!("interrupt: stopf");
-    }
-    if isr.nackf() {
-        trace!("interrupt: nackf");
-    }
-    if isr.berr() {
-        trace!("interrupt: berr");
-    }
-    if isr.arlo() {
-        trace!("interrupt: arlo");
-    }
-    if isr.ovr() {
-        trace!("interrupt: ovr");
-    }
-}
-
 pub(crate) unsafe fn on_interrupt<T: Instance>() {
     let regs = T::info().regs;
     let isr = regs.isr().read();
 
     if isr.tcr() || isr.tc() || isr.addr() || isr.stopf() || isr.nackf() || isr.berr() || isr.arlo() || isr.ovr() {
-        debug_print_interrupts(isr);
-
         T::state().waker.wake();
     }
 
@@ -115,12 +86,17 @@ impl<'d, M: Mode, IM: MasterMode> I2c<'d, M, IM> {
     }
 
     pub(crate) fn init(&mut self, config: Config) {
+        let timings = Timings::new(self.kernel_clock, config.frequency.into());
+
+        assert!(config.digital_noise_filter <= 0x0F);
+        assert!(timings.scll > config.digital_noise_filter + 4);
+        assert!(timings.sclh > 1);
+
         self.info.regs.cr1().modify(|reg| {
             reg.set_pe(false);
-            reg.set_anfoff(false);
+            reg.set_anfoff(config.disable_analog_noise_filter);
+            reg.set_dnf(i2c::vals::Dnf::from(config.digital_noise_filter));
         });
-
-        let timings = Timings::new(self.kernel_clock, config.frequency.into());
 
         self.info.regs.timingr().write(|reg| {
             reg.set_presc(timings.prescale);
@@ -1219,8 +1195,18 @@ impl<'d, IM: MasterMode> I2c<'d, Async, IM> {
         if write.is_empty() {
             self.write_internal(address, write, false, timeout)?;
         } else {
-            let fut = self.write_dma_internal(address, write, true, true, false, false, timeout);
+            // What happens here if the write function returns with an error or gets canceled?
+            // We have to send the stop condition to the slave!
+            let on_drop = OnDrop::new(|| {
+                let regs = self.info.regs;
+                regs.cr2().write(|w| w.set_stop(true));
+                warn!("write_read::on_drop::sending_stop");
+            });
+
+            let fut = self.write_dma_internal(address.into(), write, true, true, false, false, timeout);
+
             timeout.with(fut).await?;
+            on_drop.defuse();
         }
 
         if read.is_empty() {
